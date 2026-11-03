@@ -303,6 +303,10 @@ def scenario_defaults(res):
         res.check("escape cancels the leader", pump_until(
             client, lambda c: "[NORMAL]" in status_line(c)), status_line(client))
 
+        client.send("printf 'INA-PANE-%s\\n' \"${KOSHI_PANE:-unset}\"\n")
+        res.check("a pane shell knows it runs inside koshi", pump_until(
+            client, lambda c: "INA-PANE-1" in c.screen.text()))
+
         client.send(b"\x10r")
         res.check("a split works without a configuration file", pump_until(
             client, lambda c: pane_state(c) == (2, 2)), status_line(client))
@@ -347,6 +351,28 @@ def scenario_defaults(res):
         os.path.join(xdg_config, "koshi", "config.toml")))
 
 
+def scenario_missing_runtime_dir(res):
+    begin("a missing XDG_RUNTIME_DIR falls back to the temp directory")
+    tmp = os.path.join(RUNTIME_DIR, "tmp")
+    os.makedirs(tmp, exist_ok=True)
+    env = {
+        "KOSHI_RUNTIME_DIR": "",
+        "XDG_RUNTIME_DIR": os.path.join(RUNTIME_DIR, "no-such-runtime"),
+        "TMPDIR": tmp,
+    }
+    client = Client(env=env)
+    try:
+        res.check("the session starts anyway", pump_until(
+            client, lambda c: "[NORMAL] main" in status_line(c)), status_line(client))
+        socket = os.path.join(tmp, "koshi-%d" % os.getuid(), "koshi.sock")
+        res.check("the socket lands in the temp directory", os.path.exists(socket),
+                  "socket=%s" % socket)
+        client.send("exit\n")
+        client.wait_exit(10)
+    finally:
+        client.close()
+
+
 def main():
     res = Result()
     try:
@@ -354,9 +380,10 @@ def main():
         scenario_disconnect(res)
         scenario_listening(res)
         scenario_defaults(res)
+        scenario_missing_runtime_dir(res)
     finally:
         cleanup()
-    return res.report("environment: latency, disconnect, sockets, defaults")
+    return res.report("environment: latency, disconnect, sockets, defaults, runtime fallback")
 
 
 if __name__ == "__main__":
