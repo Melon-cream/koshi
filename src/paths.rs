@@ -25,10 +25,20 @@ pub fn runtime_dir() -> PathBuf {
         return PathBuf::from(dir);
     }
     if let Some(dir) = non_empty_env("XDG_RUNTIME_DIR") {
-        return PathBuf::from(dir).join(APP_NAME);
+        let dir = PathBuf::from(dir);
+        // WSL without systemd points XDG_RUNTIME_DIR at a directory that does
+        // not exist, and creating it under /run needs root.
+        if dir.is_dir() {
+            return dir.join(APP_NAME);
+        }
     }
+    fallback_runtime_dir()
+}
+
+/// Where the socket lives when the session runtime directory is unusable.
+fn fallback_runtime_dir() -> PathBuf {
     let uid = unsafe { geteuid() };
-    PathBuf::from(format!("/tmp/{APP_NAME}-{uid}"))
+    std::env::temp_dir().join(format!("{APP_NAME}-{uid}"))
 }
 
 pub fn socket_path() -> PathBuf {

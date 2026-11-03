@@ -48,7 +48,8 @@ fn spawn_server() -> Result<()> {
         .arg("--daemon")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        // Keep stderr so a server that cannot start says why.
+        .stderr(Stdio::inherit())
         .spawn()
         .context("cannot start the koshi server")?;
     Ok(())
@@ -61,7 +62,11 @@ async fn wait_for_server(socket: &Path) -> Result<UnixStream> {
             Ok(stream) => return Ok(stream),
             Err(err) => {
                 if Instant::now() >= deadline {
-                    return Err(anyhow!("cannot connect to {}: {err}", socket.display()));
+                    return Err(anyhow!(
+                        "cannot connect to {}: {err}\n\
+                         run `koshi server` in the foreground to see why",
+                        socket.display()
+                    ));
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
