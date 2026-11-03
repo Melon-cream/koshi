@@ -114,6 +114,9 @@ impl Pane {
         let mut command = CommandBuilder::new(&shell);
         let term = std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".to_string());
         command.env("TERM", term);
+        // A shell can tell it runs inside a pane, so a startup file can avoid
+        // attaching a second time.
+        command.env("KOSHI_PANE", id.to_string());
         if let Some(cwd) = init.cwd.filter(|dir| Path::new(dir).is_dir()) {
             command.cwd(cwd);
         }

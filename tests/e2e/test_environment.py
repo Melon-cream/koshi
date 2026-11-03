@@ -303,6 +303,10 @@ def scenario_defaults(res):
         res.check("escape cancels the leader", pump_until(
             client, lambda c: "[NORMAL]" in status_line(c)), status_line(client))
 
+        client.send("printf 'INA-PANE-%s\\n' \"${KOSHI_PANE:-unset}\"\n")
+        res.check("a pane shell knows it runs inside koshi", pump_until(
+            client, lambda c: "INA-PANE-1" in c.screen.text()))
+
         client.send(b"\x10r")
         res.check("a split works without a configuration file", pump_until(
             client, lambda c: pane_state(c) == (2, 2)), status_line(client))
