@@ -9,6 +9,12 @@ use crate::server::session::Session;
 
 impl Session {
     pub(super) fn split(&mut self, dir: Dir) -> Result<()> {
+        // A workspace can be empty when its last pane closed and it kept its
+        // SSH definition; the first split there just builds its first tab.
+        if self.active_tab().is_none() {
+            self.new_tab()?;
+            return Ok(());
+        }
         let area = self.content_area();
         let id = self.next_pane;
         let alias = self.active_alias();

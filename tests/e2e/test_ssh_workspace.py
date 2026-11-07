@@ -83,6 +83,12 @@ def wait_text(client, needle, timeout=10.0):
     return pump_until(client, lambda c: needle in c.screen.text(), timeout)
 
 
+def wait_quiet(client):
+    """Let the drawing loop settle before reading the whole screen."""
+    client.wait_quiet()
+    return True
+
+
 def fake_ssh_env():
     """PATH with the recording `ssh` first, and where it writes its argv log."""
     bindir = os.path.join(RUNTIME_DIR, "bin")
@@ -460,6 +466,132 @@ def scenario_migrate(res):
         client.close()
 
 
+def make_ssh_workspace(client, alias):
+    """Create ws2, give it an ssh alias, and come back with the list closed."""
+    client.send(SESSION + b"w")
+    if not wait_text(client, "Workspaces"):
+        return False
+    client.send(b"n")
+    if not wait_status(client, "[NORMAL] ws2"):
+        return False
+    if not close_overlay(client):
+        return False
+    if not open_settings(client):
+        return False
+    client.send(ENTER)
+    if not wait_status(client, "[ALIAS]"):
+        return False
+    client.send(alias)
+    client.pump(0.2)
+    client.send(ENTER)
+    if not wait_text(client, "ssh -G %s: ok" % alias):
+        return False
+    return close_overlay(client)
+
+
+def scenario_list_marks_ssh(res):
+    begin("the workspace list marks an ssh workspace")
+    env, _log = fake_ssh_env()
+    client = Client(env=env)
+    try:
+        res.check("the session starts", wait_status(client, "[NORMAL] main"), status(client))
+        res.check("an ssh workspace is set up", make_ssh_workspace(client, "myhost"), status(client))
+
+        client.send(SESSION + b"w")
+        res.check("the list opens again", wait_text(client, "Workspaces"))
+        wait_quiet(client)
+        screen = normalize_screen(client.screen.text())
+        res.check("the ssh workspace is marked with its alias", "ssh:myhost" in screen, screen)
+        local = [line for line in screen.splitlines() if "main" in line]
+        res.check("a local workspace carries no ssh mark",
+                  bool(local) and "ssh:" not in local[0], screen)
+
+        close_overlay(client)
+        client.send("exit\n")
+        client.wait_exit(10)
+    finally:
+        client.close()
+
+
+def scenario_empty_ssh_workspace(res):
+    begin("closing every pane of an ssh workspace keeps its definition")
+    env, log = fake_ssh_env()
+    client = Client(env=env)
+    try:
+        res.check("the session starts", wait_status(client, "[NORMAL] main"), status(client))
+        res.check("an ssh workspace is set up", make_ssh_workspace(client, "myhost"), status(client))
+
+        client.send(PANE + b"x")
+        client.pump(1.0)
+        res.check("the client is still attached", client.exit_code is None,
+                  "exit_code=%r" % (client.exit_code,))
+        res.check("the workspace stays the current one", wait_status(client, "[NORMAL] ws2"),
+                  status(client))
+
+        client.send(SESSION + b"w")
+        wait_text(client, "Workspaces")
+        wait_quiet(client)
+        screen = normalize_screen(client.screen.text())
+        row = [line for line in screen.splitlines() if "ws2" in line]
+        res.check("the empty workspace is listed", bool(row), screen)
+        res.check("it still shows its alias", "ssh:myhost" in screen, screen)
+        res.check("it counts no pane", bool(row) and "0 tabs, 0 panes" in row[0], screen)
+
+        close_overlay(client)
+        client.send(PANE + b"n")
+        res.check("a split in the empty workspace brings back a pane",
+                  wait_calls(log, 2), "calls=%r" % ssh_calls(log))
+        res.check("that pane is an ssh pane", len(ssh_runs(log)) == 1,
+                  "runs=%r" % ssh_runs(log))
+        res.check("the session is still alive", client.exit_code is None,
+                  "exit_code=%r" % (client.exit_code,))
+        client.send("exit\n")
+        client.wait_exit(10)
+    finally:
+        client.close()
+
+
+def scenario_main_after_all_panes_close(res):
+    begin("a session with no pane left starts a fresh main workspace")
+    env, _log = fake_ssh_env()
+    client = Client(env=env)
+    try:
+        res.check("the session starts", wait_status(client, "[NORMAL] main"), status(client))
+        res.check("an ssh workspace is set up", make_ssh_workspace(client, "myhost"), status(client))
+
+        client.send(PANE + b"x")
+        client.pump(0.6)
+        client.send(SESSION + b"w")
+        wait_text(client, "Workspaces")
+        client.send(b"k")
+        wait_text(client, "> main")
+        client.send(ENTER)
+        res.check("main becomes the current workspace", wait_status(client, "[NORMAL] main"),
+                  status(client))
+        client.send(PANE + b"x")
+        res.check("the client exits with the last pane", client.wait_exit(15) is not None,
+                  "exit_code=%r" % (client.exit_code,))
+    finally:
+        client.close()
+
+    again = Client(env=env)
+    try:
+        res.check("a new session starts in a main workspace",
+                  wait_status(again, "[NORMAL] main"), status(again))
+        again.send(SESSION + b"w")
+        wait_text(again, "Workspaces")
+        wait_quiet(again)
+        screen = normalize_screen(again.screen.text())
+        rows = [line for line in screen.splitlines() if "ws2" in line]
+        res.check("the empty ssh workspace came back", bool(rows), screen)
+        res.check("it kept its alias", "ssh:myhost" in screen, screen)
+        close_overlay(again)
+        again.send("exit\n")
+        again.wait_exit(10)
+    finally:
+        again.close()
+
+
 def main():
     res = Result()
     try:
@@ -470,6 +602,9 @@ def main():
         scenario_check_failure(res)
         scenario_restore(res)
         scenario_migrate(res)
+        scenario_list_marks_ssh(res)
+        scenario_empty_ssh_workspace(res)
+        scenario_main_after_all_panes_close(res)
     finally:
         cleanup()
     return res.report("ssh workspace")

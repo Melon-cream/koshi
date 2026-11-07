@@ -24,10 +24,9 @@ impl Session {
         if !self.dirty || self.clients.is_empty() {
             return;
         }
-        let Some((rects, focus)) = self.active_view() else {
-            self.dirty = false;
-            return;
-        };
+        // An empty workspace still draws its status bar, the list, and the
+        // settings screen, so it renders with no pane at all.
+        let (rects, focus) = self.active_view().unwrap_or_default();
         let snapshots = self.snapshots(&rects, focus);
         let area = self.content_area();
         let (base, active_tab) = self.base_status();
@@ -189,12 +188,17 @@ impl Session {
         (line, active)
     }
 
-    pub(super) fn workspace_entries(&self) -> Vec<(String, usize, usize)> {
+    pub(super) fn workspace_entries(&self) -> Vec<(String, usize, usize, Option<String>)> {
         self.workspaces
             .iter()
             .map(|workspace| {
                 let panes = workspace.tabs.iter().map(|tab| tab.panes.len()).sum();
-                (workspace.name.clone(), workspace.tabs.len(), panes)
+                (
+                    workspace.name.clone(),
+                    workspace.tabs.len(),
+                    panes,
+                    workspace.ssh_alias.clone(),
+                )
             })
             .collect()
     }

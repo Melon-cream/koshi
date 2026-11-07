@@ -25,11 +25,16 @@ impl Session {
                 if saved_workspace.ssh_alias.is_none() {
                     continue;
                 }
-                let area = self.content_area();
-                let Ok(tab) = self.build_tab("shell", area, Launch::Shell { cwd: None }) else {
-                    continue;
-                };
-                tabs.push(tab);
+                // An SSH workspace keeps its definition without a pane.
+                workspaces.push(Workspace {
+                    id: saved_workspace.id,
+                    name: saved_workspace.name,
+                    ssh_alias: saved_workspace.ssh_alias,
+                    tabs: Vec::new(),
+                    active: 0,
+                    previous_tab: None,
+                });
+                continue;
             }
             let active = saved_workspace.active.min(tabs.len() - 1);
             workspaces.push(Workspace {
@@ -44,7 +49,37 @@ impl Session {
         if workspaces.is_empty() {
             return false;
         }
-        self.active = saved.active.min(workspaces.len() - 1);
+        // A session with no pane anywhere gets a fresh local workspace, so an
+        // empty SSH workspace never leaves the screen without input.
+        let has_panes = workspaces
+            .iter()
+            .any(|workspace| workspace.tabs.iter().any(|tab| !tab.panes.is_empty()));
+        let next_id = workspaces
+            .iter()
+            .map(|workspace| workspace.id + 1)
+            .max()
+            .unwrap_or(2)
+            .max(2);
+        if !has_panes {
+            let area = self.content_area();
+            if let Ok(tab) = self.build_tab("shell", area, Launch::Shell { cwd: None }) {
+                workspaces.push(Workspace {
+                    id: next_id,
+                    name: "main".to_string(),
+                    ssh_alias: None,
+                    tabs: vec![tab],
+                    active: 0,
+                    previous_tab: None,
+                });
+                // Start on the workspace that has a pane, not on an empty one.
+                self.active = workspaces.len() - 1;
+            }
+        }
+        if has_panes {
+            self.active = saved.active.min(workspaces.len() - 1);
+        } else {
+            self.active = self.active.min(workspaces.len() - 1);
+        }
         self.next_workspace = workspaces
             .iter()
             .map(|workspace| workspace.id + 1)

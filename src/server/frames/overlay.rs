@@ -8,7 +8,7 @@ use crate::server::tab::Workspace;
 /// `None` unless the client is in the workspace list, its settings screen, or
 /// renaming in the list.
 pub(in crate::server) fn build(
-    entries: &[(String, usize, usize)],
+    entries: &[(String, usize, usize, Option<String>)],
     active: usize,
     client: &Client,
     workspaces: &[Workspace],
@@ -38,19 +38,28 @@ pub(in crate::server) fn build(
     }
 }
 
-fn list(entries: &[(String, usize, usize)], active: usize, client: &Client) -> Overlay {
+fn list(
+    entries: &[(String, usize, usize, Option<String>)],
+    active: usize,
+    client: &Client,
+) -> Overlay {
     let items = entries
         .iter()
         .enumerate()
-        .map(|(index, (name, tabs, panes))| {
+        .map(|(index, (name, tabs, panes, alias))| {
+            let ssh = match alias {
+                Some(alias) => format!("ssh:{alias}"),
+                None => String::new(),
+            };
             format!(
-                "{} {:<16} {} tabs, {} panes{}",
+                "{} {:<16} {:<14} {} tabs, {} panes{}",
                 if index == client.overlay_selected {
                     ">"
                 } else {
                     " "
                 },
                 name,
+                ssh,
                 tabs,
                 panes,
                 if index == active { " (current)" } else { "" }
