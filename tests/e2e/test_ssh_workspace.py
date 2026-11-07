@@ -259,8 +259,64 @@ def scenario_alias_panes(res):
         res.check("a second split starts its own ssh process",
                   wait_calls(log, 3) and len(ssh_runs(log)) == 2, "calls=%r" % ssh_calls(log))
         res.check("both ssh panes show their own connection",
-                  client.screen.text().count("SSH-PANE:myhost") >= 2, client.screen.text())
+                  pump_until(client, lambda c: c.screen.text().count("SSH-PANE:myhost") >= 2),
+                  client.screen.text())
         res.check("the workspace keeps its name", "[NORMAL] ws2" in status(client), status(client))
+
+        # A workspace created while an SSH workspace is active is a normal one.
+        runs_before = len(ssh_runs(log))
+        client.send(SESSION + b"w")
+        res.check("the list opens from the ssh workspace", wait_text(client, "Workspaces"))
+        client.send(b"n")
+        created = wait_status(client, "[NORMAL] ws3")
+        res.check("a workspace created from an ssh workspace opens",
+                  created and close_overlay(client), status(client))
+        client.send("echo WS-$((6*7))\n")
+        res.check("the new workspace starts a local shell, not ssh",
+                  wait_text(client, "WS-42"), client.screen.text())
+        res.check("creating that workspace started no ssh process",
+                  len(ssh_runs(log)) == runs_before, "runs=%r" % ssh_runs(log))
+    finally:
+        client.close()
+
+
+def scenario_clear_alias(res):
+    begin("clearing the alias turns the workspace back into a normal one")
+    env, log = fake_ssh_env()
+    client = Client(env=env)
+    try:
+        res.check("the session starts", wait_status(client, "[NORMAL] main"), status(client))
+        res.check("the settings screen opens", open_settings(client))
+        client.send(ENTER)
+        wait_status(client, "[ALIAS]")
+        client.send("myhost")
+        client.send(ENTER)
+        res.check("the alias is set", wait_text(client, "ssh -G myhost: ok"), client.screen.text())
+        close_overlay(client)
+        client.send(PANE + b"n")
+        res.check("a split runs ssh", wait_text(client, "SSH-PANE:myhost"))
+        runs_before = len(ssh_runs(log))
+
+        res.check("the settings screen opens again", open_settings(client))
+        client.send(ENTER)
+        res.check("the editor starts from the saved alias",
+                  wait_text(client, "alias: myhost_"), client.screen.text())
+        for _ in range(len("myhost")):
+            client.send(BACKSPACE)
+            client.pump(0.01)
+        client.send(ENTER)
+        res.check("the cleared alias is shown as empty",
+                  wait_text(client, "ssh alias: (none)"), client.screen.text())
+        res.check("clearing runs no ssh check", "ssh -G" not in client.screen.text(),
+                  client.screen.text())
+        close_overlay(client)
+
+        client.send(PANE + b"n")
+        client.send("echo LOCAL-AGAIN\n")
+        res.check("a new split after clearing starts a local shell",
+                  wait_text(client, "LOCAL-AGAIN"), client.screen.text())
+        res.check("no ssh process was started after clearing",
+                  len(ssh_runs(log)) == runs_before, "runs=%r" % ssh_runs(log))
     finally:
         client.close()
 
@@ -283,7 +339,9 @@ def scenario_odd_alias(res):
         res.check("the settings screen and the list close", close_overlay(client), status(client))
 
         client.send(PANE + b"n")
-        res.check("a split starts the ssh pane", wait_calls(log, 2), "calls=%r" % ssh_calls(log))
+        res.check("a split starts the ssh pane",
+                  wait_text(client, "SSH-PANE:") and wait_calls(log, 2),
+                  "calls=%r" % ssh_calls(log))
         runs = ssh_runs(log)
         res.check("the alias reaches ssh as exactly one argument",
                   runs == ["RUN\t<%s>" % alias], "runs=%r" % runs)
@@ -407,6 +465,7 @@ def main():
     try:
         scenario_settings_screen(res)
         scenario_alias_panes(res)
+        scenario_clear_alias(res)
         scenario_odd_alias(res)
         scenario_check_failure(res)
         scenario_restore(res)
