@@ -267,7 +267,7 @@ impl Session {
                     id: workspace.id,
                     name: workspace.name.clone(),
                     ssh_alias: workspace.ssh_alias.clone(),
-                    record: false,
+                    record: workspace.record,
                     active: workspace.active,
                     tabs: workspace
                         .tabs

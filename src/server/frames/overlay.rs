@@ -101,7 +101,10 @@ fn settings(
     footer.push("Esc back".to_string());
     Overlay {
         title: "Settings".to_string(),
-        items: vec![format!("ssh alias: {alias}")],
+        items: vec![
+            format!("ssh alias: {alias}"),
+            format!("record: {}", if workspace.record { "on" } else { "off" }),
+        ],
         selected,
         prompt: buffer.map(|text| format!("alias: {text}_")),
         footer: footer.join("  "),

@@ -80,6 +80,11 @@ pub fn state_path() -> PathBuf {
     state_dir().join(STATE_FILE)
 }
 
+/// Root of the pane recordings. `record_root` in the config moves it.
+pub fn record_dir() -> PathBuf {
+    state_dir().join("record")
+}
+
 /// Create the state directory with owner-only permissions.
 pub fn ensure_state_dir() -> io::Result<PathBuf> {
     let dir = state_dir();

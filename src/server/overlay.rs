@@ -3,8 +3,13 @@
 use std::process::{Command, Stdio};
 
 use crate::server::input::{AliasCheck, InputState, TextTarget};
+use crate::server::record;
 use crate::server::session::Session;
 use crate::server::tab::Workspace;
+
+/// Rows of the workspace settings screen, in the order they are drawn.
+const RECORD_ROW: usize = 1;
+const SETTINGS_ROWS: usize = 2;
 
 impl Session {
     pub(super) fn overlay_move(&mut self, id: u64, delta: isize) {
@@ -86,14 +91,46 @@ impl Session {
         self.dirty = true;
     }
 
-    /// Start editing the one item of the settings screen.
+    /// Move the highlight inside the settings screen.
+    pub(super) fn settings_move(&mut self, id: u64, delta: isize) {
+        let mut moved = false;
+        if let Some(client) = self.client_mut(id) {
+            if let InputState::Settings { selected, .. } = &mut client.input {
+                let next = (*selected as isize + delta).clamp(0, SETTINGS_ROWS as isize - 1);
+                *selected = next as usize;
+                moved = true;
+            }
+        }
+        if moved {
+            self.dirty = true;
+        }
+    }
+
+    /// Enter on the settings screen: edit the alias, or flip recording.
     pub(super) fn settings_edit(&mut self, id: u64) {
-        let Some(workspace) = self.client_mut(id).and_then(|client| match client.input {
-            InputState::Settings { workspace, .. } => Some(workspace),
+        let Some((workspace, selected)) = self.client_mut(id).and_then(|client| match client.input {
+            InputState::Settings {
+                workspace,
+                selected,
+                ..
+            } => Some((workspace, selected)),
             _ => None,
         }) else {
             return;
         };
+        if selected == RECORD_ROW {
+            if let Some(entry) = self
+                .workspaces
+                .iter_mut()
+                .find(|entry| entry.id == workspace)
+            {
+                entry.record = !entry.record;
+            }
+            // The flag is part of the state file, and new panes read it.
+            self.pending_save = true;
+            self.dirty = true;
+            return;
+        }
         let buffer = self
             .workspace_by_id(workspace)
             .and_then(|workspace| workspace.ssh_alias.clone())
@@ -130,8 +167,17 @@ impl Session {
                 }
             }
             TextTarget::Workspace(index) => {
+                let root = self.record_root.clone();
                 if let Some(workspace) = self.workspaces.get_mut(index) {
-                    workspace.name = name;
+                    let old = std::mem::replace(&mut workspace.name, name);
+                    if old != workspace.name {
+                        // Uncompressed recordings follow the name; archives do not.
+                        if let Err(err) =
+                            record::rename_workspace(&root, &old, &workspace.name, workspace.id)
+                        {
+                            eprintln!("koshi: cannot move the recordings: {err}");
+                        }
+                    }
                 }
                 if let Some(client) = self.client_mut(id) {
                     client.input = InputState::Overlay;

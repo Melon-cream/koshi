@@ -1,6 +1,7 @@
 //! Session state: clients, workspaces, and the operations that change them.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -61,6 +62,8 @@ pub(super) struct Session {
     pub(super) next_pane: u64,
     pub(super) next_workspace: u64,
     pub(super) leader: Leader,
+    /// Root of the pane recordings.
+    pub(super) record_root: PathBuf,
 }
 
 impl Session {
@@ -69,6 +72,7 @@ impl Session {
         scroll_lines: usize,
         signals: UnboundedSender<PaneSignal>,
         leader: Leader,
+        record_root: PathBuf,
         cols: u16,
         rows: u16,
     ) -> Result<Self> {
@@ -91,6 +95,7 @@ impl Session {
             next_pane: 1,
             next_workspace: 2,
             leader,
+            record_root,
         };
         let restored = match loaded.state {
             Some(saved) => session.restore(saved),
@@ -98,11 +103,12 @@ impl Session {
         };
         if !restored {
             let area = session.content_area();
-            let tab = session.build_tab("shell", area, Launch::Shell { cwd: None })?;
+            let tab = session.build_tab("shell", area, Launch::Shell { cwd: None }, None)?;
             session.workspaces.push(Workspace {
                 id: 1,
                 name: "main".to_string(),
                 ssh_alias: None,
+                record: false,
                 tabs: vec![tab],
                 active: 0,
                 previous_tab: None,

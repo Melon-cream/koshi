@@ -19,7 +19,8 @@ impl Session {
         let id = self.next_pane;
         let alias = self.active_alias();
         self.next_pane += 1;
-        let pane = self.spawn_pane(id, area, Launch::with_alias(alias.as_deref()))?;
+        let record = self.new_record_target(id);
+        let pane = self.spawn_pane(id, area, Launch::with_alias(alias.as_deref()), record)?;
 
         let active = self.active;
         let workspace = &mut self.workspaces[active];

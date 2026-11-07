@@ -224,7 +224,8 @@ impl Session {
             }
             Command::OverlayDelete => self.overlay_delete(id),
             Command::OverlaySettings => self.open_settings(id),
-            Command::SettingsUp | Command::SettingsDown => {}
+            Command::SettingsUp => self.settings_move(id, -1),
+            Command::SettingsDown => self.settings_move(id, 1),
             Command::SettingsEdit => self.settings_edit(id),
             Command::CloseSettings => self.close_settings(id),
             Command::CloseOverlay => {

@@ -18,6 +18,7 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system}
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::server::launch::Launch;
+use crate::server::record::{RecordTarget, Recorder};
 
 /// Signals produced by a pane outside of its command channel.
 pub enum PaneSignal {
@@ -52,6 +53,8 @@ pub struct PaneInit<'a> {
     pub launch: Launch<'a>,
     /// Restored history, fed before the reader thread starts.
     pub lines: &'a [String],
+    /// Set when the workspace records this pane's output.
+    pub record: Option<RecordTarget>,
 }
 
 impl Dimensions for PaneSize {
@@ -81,6 +84,8 @@ pub struct Pane {
     restored: bool,
     /// Armed after the first attach; the next server tick sends the Ctrl-L.
     clear_pending: bool,
+    /// Set when the workspace records this pane's output.
+    recorder: Option<Recorder>,
 }
 
 impl Pane {
@@ -148,6 +153,16 @@ impl Pane {
         );
         feed_history(&mut term, init.lines);
         let processor: Processor = Processor::new();
+        let recorder = match init.record {
+            Some(target) => match Recorder::start(&target) {
+                Ok(recorder) => Some(recorder),
+                Err(err) => {
+                    eprintln!("koshi: cannot record pane {id}: {err}");
+                    None
+                }
+            },
+            None => None,
+        };
 
         thread::spawn(move || {
             let mut buf = [0u8; 65536];
@@ -180,6 +195,7 @@ impl Pane {
             exited: false,
             restored: false,
             clear_pending: false,
+            recorder,
         })
     }
 
@@ -258,6 +274,15 @@ impl Pane {
 
     pub fn process(&mut self, bytes: &[u8]) {
         self.processor.advance(&mut self.term, bytes);
+        let Some(recorder) = self.recorder.as_mut() else {
+            return;
+        };
+        // The alternate screen would record a full-screen program's redraws.
+        if self.term.mode().contains(TermMode::ALT_SCREEN) {
+            recorder.reset();
+        } else {
+            recorder.feed(bytes);
+        }
     }
 
     pub fn write(&mut self, bytes: &[u8]) -> std::io::Result<()> {
@@ -359,6 +384,10 @@ impl Pane {
 
 impl Drop for Pane {
     fn drop(&mut self) {
+        // The pane is going away, so its last line can no longer change.
+        if let Some(recorder) = self.recorder.as_mut() {
+            recorder.finish();
+        }
         // Dropping the master also hangs up the child, but kill it explicitly
         // so closed panes and workspaces do not leave processes behind.
         let _ = self.child.kill();

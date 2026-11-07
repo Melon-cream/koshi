@@ -16,6 +16,7 @@ mod overlay;
 mod pane;
 mod panes;
 mod pointer;
+mod record;
 mod resize;
 mod scroll;
 mod select;
@@ -83,11 +84,13 @@ pub async fn run(daemon: bool) -> Result<i32> {
 
     let (core_tx, core_rx) = mpsc::unbounded_channel();
     let (pane_tx, pane_rx) = mpsc::unbounded_channel();
+    let record_root = config.record_root.clone().unwrap_or_else(paths::record_dir);
     let mut session = match Session::new(
         config.history_lines,
         config.scroll_lines,
         pane_tx,
         config.leader,
+        record_root,
         80,
         24,
     ) {
