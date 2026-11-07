@@ -1,10 +1,16 @@
-//! Saved session state: the on-disk format, its limits, and restore.
+//! Saved session state: the on-disk format, its limits, and the snapshot.
 //!
 //! The file is `state.bin` under the state directory. Layout is:
 //! [`MAGIC`] (6) + format version (u16 LE) + payload length (u32 LE) +
 //! postcard payload + FNV-1a 64 checksum (u64 LE) of the payload.
 //! Anything that does not decode cleanly is dropped: the server then starts
 //! empty and tells the first client.
+//!
+//! Format 2 added the workspace `id`, `ssh_alias`, and `record`. A format-1
+//! file is decoded with the copy in `v1` and converted.
+
+mod restore;
+mod v1;
 
 use std::fs;
 use std::io::{self, Write};
@@ -14,12 +20,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::paths;
 use crate::server::layout::Layout;
-use crate::server::pane::{Pane, PaneInit};
 use crate::server::session::Session;
-use crate::server::tab::{Tab, Workspace};
 
 const MAGIC: &[u8] = b"KOSHI\0";
-const FORMAT: u16 = 1;
+const FORMAT: u16 = 2;
 const HEADER_LEN: usize = MAGIC.len() + 2 + 4;
 const CHECKSUM_LEN: usize = 8;
 
@@ -28,9 +32,13 @@ const MAX_PANE_LINES: usize = 2000;
 /// History budget for the whole file.
 const MAX_HISTORY_BYTES: usize = 400 * 1024;
 
+/// Longest alias an SSH workspace keeps; anything longer is dropped on load.
+pub const MAX_ALIAS_BYTES: usize = 255;
+
 const TMP_FILE: &str = ".state.bin.tmp";
 
 pub const UNREADABLE: &str = "koshi: saved state was unreadable; starting empty";
+pub const DROPPED_ALIAS: &str = "koshi: dropped an invalid ssh alias on a workspace";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SavedState {
@@ -40,7 +48,11 @@ pub struct SavedState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SavedWorkspace {
+    pub id: u64,
     pub name: String,
+    pub ssh_alias: Option<String>,
+    /// Reserved for the recording feature; always written as false today.
+    pub record: bool,
     pub active: usize,
     pub tabs: Vec<SavedTab>,
 }
@@ -64,6 +76,12 @@ pub struct SavedPane {
     pub lines: Vec<String>,
 }
 
+/// An alias an SSH workspace may hold: bounded and free of control characters.
+/// The shape itself is left to `ssh`, so nothing else is checked here.
+pub fn alias_is_valid(value: &str) -> bool {
+    value.len() <= MAX_ALIAS_BYTES && !value.chars().any(char::is_control)
+}
+
 /// What the state file had to offer at startup.
 pub struct Loaded {
     pub state: Option<SavedState>,
@@ -75,10 +93,13 @@ pub fn load() -> Loaded {
     let path = paths::state_path();
     match fs::read(&path) {
         Ok(bytes) => match decode(&bytes) {
-            Ok(state) => Loaded {
-                state: Some(state),
-                warning: None,
-            },
+            Ok(mut state) => {
+                let dropped = take_invalid_aliases(&mut state);
+                Loaded {
+                    state: Some(state),
+                    warning: (!dropped.is_empty()).then_some(dropped),
+                }
+            }
             Err(err) => {
                 eprintln!("koshi: {}: {err}", path.display());
                 Loaded {
@@ -101,6 +122,25 @@ pub fn load() -> Loaded {
     }
 }
 
+/// Drop the aliases that cannot be used and report the count in one line.
+fn take_invalid_aliases(state: &mut SavedState) -> String {
+    let mut dropped = 0;
+    for workspace in &mut state.workspaces {
+        if workspace
+            .ssh_alias
+            .as_deref()
+            .is_some_and(|alias| !alias_is_valid(alias))
+        {
+            workspace.ssh_alias = None;
+            dropped += 1;
+        }
+    }
+    if dropped == 0 {
+        return String::new();
+    }
+    format!("{DROPPED_ALIAS} ({dropped})")
+}
+
 /// Write the state through a temporary file in the same directory.
 pub fn write(state: &SavedState) -> io::Result<()> {
     let dir = paths::ensure_state_dir()?;
@@ -121,16 +161,35 @@ pub fn write(state: &SavedState) -> io::Result<()> {
 
 fn encode(state: &SavedState) -> Result<Vec<u8>, String> {
     let payload = postcard::to_stdvec(state).map_err(|err| err.to_string())?;
+    Ok(frame(FORMAT, &payload))
+}
+
+/// A header, the payload, and its checksum.
+fn frame(version: u16, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(HEADER_LEN + payload.len() + CHECKSUM_LEN);
     out.extend_from_slice(MAGIC);
-    out.extend_from_slice(&FORMAT.to_le_bytes());
+    out.extend_from_slice(&version.to_le_bytes());
     out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    out.extend_from_slice(&payload);
-    out.extend_from_slice(&fnv1a(&payload).to_le_bytes());
-    Ok(out)
+    out.extend_from_slice(payload);
+    out.extend_from_slice(&fnv1a(payload).to_le_bytes());
+    out
 }
 
 fn decode(bytes: &[u8]) -> Result<SavedState, String> {
+    let (version, payload) = split(bytes)?;
+    match version {
+        1 => postcard::from_bytes::<v1::StateV1>(payload)
+            .map(v1::StateV1::into_current)
+            .map_err(|err| format!("cannot decode a format 1 payload: {err}")),
+        2 => {
+            postcard::from_bytes(payload).map_err(|err| format!("cannot decode the payload: {err}"))
+        }
+        other => Err(format!("format version {other} is not supported")),
+    }
+}
+
+/// The version and the checksummed payload of a state file.
+fn split(bytes: &[u8]) -> Result<(u16, &[u8]), String> {
     if bytes.len() < HEADER_LEN + CHECKSUM_LEN {
         return Err("file is too short".to_string());
     }
@@ -138,9 +197,6 @@ fn decode(bytes: &[u8]) -> Result<SavedState, String> {
         return Err("not a koshi state file".to_string());
     }
     let version = u16::from_le_bytes([bytes[6], bytes[7]]);
-    if version != FORMAT {
-        return Err(format!("format version {version} is not supported"));
-    }
     let len = u32::from_le_bytes(bytes[8..12].try_into().expect("4 bytes")) as usize;
     let end = HEADER_LEN
         .checked_add(len)
@@ -153,7 +209,7 @@ fn decode(bytes: &[u8]) -> Result<SavedState, String> {
     if fnv1a(payload) != stored {
         return Err("checksum mismatch".to_string());
     }
-    postcard::from_bytes(payload).map_err(|err| format!("cannot decode the payload: {err}"))
+    Ok((version, payload))
 }
 
 fn fnv1a(bytes: &[u8]) -> u64 {
@@ -208,7 +264,10 @@ impl Session {
                 .workspaces
                 .iter()
                 .map(|workspace| SavedWorkspace {
+                    id: workspace.id,
                     name: workspace.name.clone(),
+                    ssh_alias: workspace.ssh_alias.clone(),
+                    record: false,
                     active: workspace.active,
                     tabs: workspace
                         .tabs
@@ -243,90 +302,6 @@ impl Session {
         if let Err(err) = write(&state) {
             eprintln!("koshi: cannot save the session state: {err}");
         }
-    }
-
-    /// Replace the session with the saved one. False when nothing was usable.
-    pub(super) fn restore(&mut self, saved: SavedState) -> bool {
-        let mut workspaces = Vec::new();
-        for saved_workspace in saved.workspaces {
-            let mut tabs = Vec::new();
-            for saved_tab in saved_workspace.tabs {
-                if let Some(tab) = self.restore_tab(saved_tab) {
-                    tabs.push(tab);
-                }
-            }
-            if tabs.is_empty() {
-                continue;
-            }
-            let active = saved_workspace.active.min(tabs.len() - 1);
-            workspaces.push(Workspace {
-                name: saved_workspace.name,
-                tabs,
-                active,
-                previous_tab: None,
-            });
-        }
-        if workspaces.is_empty() {
-            return false;
-        }
-        self.active = saved.active.min(workspaces.len() - 1);
-        self.workspaces = workspaces;
-        true
-    }
-
-    fn restore_tab(&mut self, saved: SavedTab) -> Option<Tab> {
-        let mut leaves = Vec::new();
-        saved.layout.leaves(&mut leaves);
-        let mut panes = Vec::new();
-        for saved_pane in &saved.panes {
-            if !leaves.contains(&saved_pane.id) {
-                continue;
-            }
-            let init = PaneInit {
-                cols: saved_pane.cols,
-                rows: saved_pane.rows,
-                cwd: saved_pane.cwd.as_deref(),
-                lines: &saved_pane.lines,
-            };
-            match Pane::new(saved_pane.id, self.history, self.signals.clone(), init) {
-                Ok(mut pane) => {
-                    pane.mark_restored();
-                    panes.push(pane);
-                }
-                Err(err) => {
-                    eprintln!("koshi: cannot restore pane {}: {err:#}", saved_pane.id)
-                }
-            }
-        }
-        if panes.is_empty() {
-            return None;
-        }
-        let mut layout = saved.layout;
-        for leaf in leaves {
-            if !panes.iter().any(|pane| pane.id() == leaf) {
-                layout.remove(leaf);
-            }
-        }
-        let ids: Vec<u64> = panes.iter().map(Pane::id).collect();
-        for id in &ids {
-            self.next_pane = self.next_pane.max(id + 1);
-        }
-        let focus = if ids.contains(&saved.focus) {
-            saved.focus
-        } else {
-            ids[0]
-        };
-        let zoomed = saved.zoomed && focus == saved.focus;
-        Some(Tab {
-            title: saved.title,
-            layout,
-            focus,
-            previous_focus: None,
-            zoomed,
-            panes,
-            floating: None,
-            float_shown: false,
-        })
     }
 }
 

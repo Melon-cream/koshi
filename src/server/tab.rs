@@ -14,7 +14,10 @@ pub(super) struct Size {
 }
 
 pub(super) struct Workspace {
+    pub(super) id: u64,
     pub(super) name: String,
+    /// Host alias of `~/.ssh/config`; `Some` makes this an SSH workspace.
+    pub(super) ssh_alias: Option<String>,
     pub(super) tabs: Vec<Tab>,
     pub(super) active: usize,
     /// Tab the client looked at before the current one.

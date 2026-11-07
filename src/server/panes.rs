@@ -3,6 +3,7 @@
 use anyhow::Result;
 
 use crate::protocol::Rect;
+use crate::server::launch::Launch;
 use crate::server::layout::{Dir, Layout};
 use crate::server::session::Session;
 
@@ -10,8 +11,9 @@ impl Session {
     pub(super) fn split(&mut self, dir: Dir) -> Result<()> {
         let area = self.content_area();
         let id = self.next_pane;
+        let alias = self.active_alias();
         self.next_pane += 1;
-        let pane = self.spawn_pane(id, area)?;
+        let pane = self.spawn_pane(id, area, Launch::with_alias(alias.as_deref()))?;
 
         let active = self.active;
         let workspace = &mut self.workspaces[active];

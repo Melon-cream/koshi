@@ -225,3 +225,77 @@ fn alt_leaders_leave_ctrl_and_a_lone_esc_alone() {
     let (pane, _) = run(&mut input, b"\x1b", Leader::Alt);
     assert_eq!(pane, b"\x1b");
 }
+
+#[test]
+fn the_list_opens_the_settings_screen() {
+    let mut input = InputState::Overlay;
+    let (pane, out) = run(&mut input, b"c", Leader::Ctrl);
+    assert!(pane.is_empty());
+    assert_eq!(out, vec![Command::OverlaySettings]);
+    assert_eq!(input, InputState::Overlay);
+}
+
+fn settings() -> InputState {
+    InputState::Settings {
+        workspace: 3,
+        selected: 0,
+        check: None,
+    }
+}
+
+#[test]
+fn the_settings_screen_takes_arrows_enter_and_esc() {
+    let cases: &[(&[u8], Command)] = &[
+        (b"\r", Command::SettingsEdit),
+        (b"\n", Command::SettingsEdit),
+        (b"\x1b", Command::CloseSettings),
+    ];
+    for (bytes, expected) in cases {
+        let mut input = settings();
+        let (_, out) = run(&mut input, bytes, Leader::Ctrl);
+        assert_eq!(out, vec![expected.clone()], "bytes {bytes:?}");
+    }
+
+    let mut input = settings();
+    let mut keys = Vec::new();
+    let mut out = Vec::new();
+    input.feed_key(KeyCode::Up, false, &mut keys, &mut out);
+    input.feed_key(KeyCode::Down, false, &mut keys, &mut out);
+    assert!(keys.is_empty());
+    assert_eq!(out, vec![Command::SettingsUp, Command::SettingsDown]);
+    assert_eq!(input, settings());
+}
+
+#[test]
+fn the_alias_buffer_stops_at_the_limit() {
+    let mut input = InputState::Text {
+        target: TextTarget::SshAlias(1),
+        buffer: String::new(),
+    };
+    let (_, out) = run(&mut input, &[b'x'; 300], Leader::Ctrl);
+    assert!(out.is_empty());
+    let InputState::Text { buffer, .. } = &input else {
+        panic!("still editing the alias: {input:?}");
+    };
+    assert_eq!(buffer.len(), 255);
+}
+
+#[test]
+fn an_empty_alias_commits_instead_of_cancelling() {
+    let mut input = InputState::Text {
+        target: TextTarget::SshAlias(4),
+        buffer: String::new(),
+    };
+    let (_, out) = run(&mut input, b"\r", Leader::Ctrl);
+    assert_eq!(
+        out,
+        vec![Command::CommitText(TextTarget::SshAlias(4), String::new())]
+    );
+
+    let mut input = InputState::Text {
+        target: TextTarget::SshAlias(4),
+        buffer: String::new(),
+    };
+    let (_, out) = run(&mut input, b"\x1b", Leader::Ctrl);
+    assert_eq!(out, vec![Command::CancelText(TextTarget::SshAlias(4))]);
+}

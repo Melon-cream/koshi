@@ -223,6 +223,10 @@ impl Session {
                 self.dirty = true;
             }
             Command::OverlayDelete => self.overlay_delete(id),
+            Command::OverlaySettings => self.open_settings(id),
+            Command::SettingsUp | Command::SettingsDown => {}
+            Command::SettingsEdit => self.settings_edit(id),
+            Command::CloseSettings => self.close_settings(id),
             Command::CloseOverlay => {
                 if let Some(client) = self.client_mut(id) {
                     client.input = InputState::Normal;

@@ -4,27 +4,35 @@ use anyhow::Result;
 
 use crate::protocol::Rect;
 use crate::server::geom::Float;
+use crate::server::launch::Launch;
 use crate::server::layout::Layout;
 use crate::server::pane::{Pane, PaneInit};
 use crate::server::session::Session;
 use crate::server::tab::{Tab, Workspace};
 
 impl Session {
-    /// Start a shell for a new pane at the client's current size.
-    pub(super) fn spawn_pane(&mut self, id: u64, area: Rect) -> Result<Pane> {
+    /// The SSH alias of the active workspace, cloned so that the `Launch` built
+    /// from it does not borrow the session across `&mut self`.
+    pub(super) fn active_alias(&self) -> Option<String> {
+        self.workspaces
+            .get(self.active)
+            .and_then(|workspace| workspace.ssh_alias.clone())
+    }
+
+    pub(super) fn spawn_pane(&mut self, id: u64, area: Rect, launch: Launch<'_>) -> Result<Pane> {
         let init = PaneInit {
             cols: area.cols.max(1),
             rows: area.rows.max(1),
-            cwd: None,
+            launch,
             lines: &[],
         };
         Pane::new(id, self.history, self.signals.clone(), init)
     }
 
-    pub(super) fn build_tab(&mut self, title: &str, area: Rect) -> Result<Tab> {
+    pub(super) fn build_tab(&mut self, title: &str, area: Rect, launch: Launch<'_>) -> Result<Tab> {
         let id = self.next_pane;
         self.next_pane += 1;
-        let pane = self.spawn_pane(id, area)?;
+        let pane = self.spawn_pane(id, area, launch)?;
         Ok(Tab {
             title: title.to_string(),
             layout: Layout::leaf(id),
@@ -39,7 +47,8 @@ impl Session {
 
     pub(super) fn new_tab(&mut self) -> Result<()> {
         let area = self.content_area();
-        let tab = self.build_tab("shell", area)?;
+        let alias = self.active_alias();
+        let tab = self.build_tab("shell", area, Launch::with_alias(alias.as_deref()))?;
         let active = self.active;
         let workspace = &mut self.workspaces[active];
         workspace.previous_tab = Some(workspace.active);
@@ -63,7 +72,8 @@ impl Session {
         if tab.floating.is_none() {
             let id = self.next_pane;
             let inner = Float::of(id, area).inner;
-            let pane = self.spawn_pane(id, inner)?;
+            let launch = self.active_alias();
+            let pane = self.spawn_pane(id, inner, Launch::with_alias(launch.as_deref()))?;
             self.next_pane += 1;
             if let Some(tab) = self.active_tab_mut() {
                 tab.floating = Some(pane);
@@ -193,10 +203,14 @@ impl Session {
             name = format!("ws{number}");
         }
         let area = self.content_area();
-        let tab = self.build_tab("shell", area)?;
+        let tab = self.build_tab("shell", area, Launch::Shell { cwd: None })?;
         let index = self.workspaces.len();
+        let id = self.next_workspace;
+        self.next_workspace += 1;
         self.workspaces.push(Workspace {
+            id,
             name,
+            ssh_alias: None,
             tabs: vec![tab],
             active: 0,
             previous_tab: None,

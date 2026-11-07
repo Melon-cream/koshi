@@ -1,12 +1,14 @@
-//! Frame production: per-client diffs, the status bar, and the workspace overlay.
+//! Frame production: per-client diffs and the status bar.
 
 use crate::protocol::{
-    BorderCell, CellData, CursorPos, Frame, Overlay, PaneFrame, Rect, RowUpdate, ServerMsg, Status,
+    BorderCell, CellData, CursorPos, Frame, PaneFrame, Rect, RowUpdate, ServerMsg, Status,
 };
 use crate::server::borders;
 use crate::server::input::{InputState, TextTarget};
-use crate::server::session::{Client, Session};
+use crate::server::session::Session;
 use crate::server::tab::Workspace;
+
+pub(super) mod overlay;
 
 struct PaneSnapshot {
     id: u64,
@@ -95,7 +97,7 @@ impl Session {
                 client.status = Some(status.clone());
                 send = true;
             }
-            let overlay = build_overlay(&entries, self.active, client);
+            let overlay = overlay::build(&entries, self.active, client, &self.workspaces);
             if client.overlay != overlay {
                 client.overlay = overlay.clone();
                 send = true;
@@ -232,6 +234,17 @@ pub(super) fn status_line(
         InputState::Normal => ("NORMAL", ""),
         InputState::Leader(kind) => (kind.label(), kind.hint()),
         InputState::Overlay => ("NORMAL", "workspace list"),
+        InputState::Settings { .. } => ("SETTINGS", "Up/Down select  Enter edit  Esc back"),
+        InputState::Text {
+            target: TextTarget::SshAlias(_),
+            buffer,
+        } => {
+            return Status {
+                line: format!("[ALIAS] ssh alias: {buffer}_"),
+                hint: None,
+                active: None,
+            };
+        }
         InputState::Text {
             target: TextTarget::Tab,
             buffer,
@@ -288,57 +301,6 @@ fn with_hint(head: String, hint: &str, cols: u16, active: Option<(u16, u16)>) ->
         hint: Some(hint),
         active,
     }
-}
-
-/// `None` unless the client is in the workspace overlay or renaming in it.
-pub(super) fn build_overlay(
-    entries: &[(String, usize, usize)],
-    active: usize,
-    client: &Client,
-) -> Option<Overlay> {
-    let open = matches!(
-        client.input,
-        InputState::Overlay
-            | InputState::Text {
-                target: TextTarget::Workspace(_),
-                ..
-            }
-    );
-    if !open {
-        return None;
-    }
-    let items = entries
-        .iter()
-        .enumerate()
-        .map(|(index, (name, tabs, panes))| {
-            format!(
-                "{} {:<16} {} tabs, {} panes{}",
-                if index == client.overlay_selected {
-                    ">"
-                } else {
-                    " "
-                },
-                name,
-                tabs,
-                panes,
-                if index == active { " (current)" } else { "" }
-            )
-        })
-        .collect();
-    let prompt = match &client.input {
-        InputState::Text {
-            target: TextTarget::Workspace(_),
-            buffer,
-        } => Some(format!("rename: {buffer}_")),
-        _ => None,
-    };
-    Some(Overlay {
-        title: "Workspaces".to_string(),
-        items,
-        selected: client.overlay_selected,
-        prompt,
-        footer: "n new  r rename  d delete  Enter switch  Esc close".to_string(),
-    })
 }
 
 fn blank(cols: u16, rows: u16) -> Vec<Vec<CellData>> {

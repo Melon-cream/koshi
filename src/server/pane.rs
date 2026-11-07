@@ -4,7 +4,6 @@ mod render;
 
 use std::fs;
 use std::io::{Read, Write};
-use std::path::Path;
 use std::thread;
 
 use alacritty_terminal::event::{Event, EventListener};
@@ -17,6 +16,8 @@ use alacritty_terminal::vte::ansi::Processor;
 use anyhow::{Context, Result};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::sync::mpsc::UnboundedSender;
+
+use crate::server::launch::Launch;
 
 /// Signals produced by a pane outside of its command channel.
 pub enum PaneSignal {
@@ -48,8 +49,7 @@ pub struct PaneSize {
 pub struct PaneInit<'a> {
     pub cols: u16,
     pub rows: u16,
-    /// Directory for the shell, ignored when it is not a directory.
-    pub cwd: Option<&'a str>,
+    pub launch: Launch<'a>,
     /// Restored history, fed before the reader thread starts.
     pub lines: &'a [String],
 }
@@ -107,23 +107,23 @@ impl Pane {
             })
             .context("cannot open a pty")?;
 
-        let shell = std::env::var("SHELL")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "/bin/sh".to_string());
-        let mut command = CommandBuilder::new(&shell);
+        let launch = init.launch.command();
+        let mut command = CommandBuilder::new(&launch.program);
+        for arg in &launch.args {
+            command.arg(arg);
+        }
         let term = std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".to_string());
         command.env("TERM", term);
         // A shell can tell it runs inside a pane, so a startup file can avoid
         // attaching a second time.
         command.env("KOSHI_PANE", id.to_string());
-        if let Some(cwd) = init.cwd.filter(|dir| Path::new(dir).is_dir()) {
+        if let Some(cwd) = launch.cwd.as_deref() {
             command.cwd(cwd);
         }
         let child = pair
             .slave
             .spawn_command(command)
-            .with_context(|| format!("cannot start {shell}"))?;
+            .with_context(|| format!("cannot start {}", launch.program))?;
         drop(pair.slave);
 
         let mut reader = pair

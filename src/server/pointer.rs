@@ -45,7 +45,8 @@ impl Session {
             return None;
         }
         let entries = self.workspace_entries();
-        let overlay = super::frames::build_overlay(&entries, self.active, client)?;
+        let overlay =
+            super::frames::overlay::build(&entries, self.active, client, &self.workspaces)?;
         overlay_geom::geometry(self.content_area(), &overlay)?.item_at(col, row)
     }
 
