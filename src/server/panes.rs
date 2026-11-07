@@ -92,7 +92,10 @@ impl Session {
             }
         }
         if let Some(index) = removed_workspace {
-            self.workspaces.remove(index);
+            let keep_workspace = self.workspaces[index].ssh_alias.is_some();
+            if !keep_workspace {
+                self.workspaces.remove(index);
+            }
             if self.workspaces.is_empty() {
                 self.active = 0;
             } else if self.active >= self.workspaces.len() {

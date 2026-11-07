@@ -22,7 +22,14 @@ impl Session {
                 }
             }
             if tabs.is_empty() {
-                continue;
+                if saved_workspace.ssh_alias.is_none() {
+                    continue;
+                }
+                let area = self.content_area();
+                let Ok(tab) = self.build_tab("shell", area, Launch::Shell { cwd: None }) else {
+                    continue;
+                };
+                tabs.push(tab);
             }
             let active = saved_workspace.active.min(tabs.len() - 1);
             workspaces.push(Workspace {
