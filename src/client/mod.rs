@@ -3,6 +3,7 @@
 mod input;
 mod paint;
 mod render;
+pub(crate) mod show;
 mod term;
 
 use std::io::{self, Read, Write};
@@ -216,6 +217,8 @@ async fn run_client(stream: UnixStream, _config: Config) -> Result<i32> {
                     failure = Some(err);
                     break;
                 }
+                // Only `koshi record show` asks for these.
+                Some(ServerMsg::RecordTail { .. }) => {}
             },
             input = input_rx.recv() => match input {
                 None | Some(None) => {

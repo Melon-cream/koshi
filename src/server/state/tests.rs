@@ -230,7 +230,10 @@ fn session() -> Session {
         1,
         tx,
         crate::config::Leader::Ctrl,
-        record_root,
+        crate::server::session::RecordSettings {
+            root: record_root,
+            retain_days: 0,
+        },
         80,
         24,
     )

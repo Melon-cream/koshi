@@ -1,6 +1,8 @@
 //! One pane: the PTY, the terminal state, and the reader thread.
 
+mod record;
 mod render;
+mod text;
 
 use std::fs;
 use std::io::{Read, Write};
@@ -8,7 +10,7 @@ use std::thread;
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::index::{Column, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::Config as TermConfig;
 use alacritty_terminal::term::{Term, TermMode, viewport_to_point};
@@ -213,26 +215,6 @@ impl Pane {
         path.to_str().map(str::to_string)
     }
 
-    /// The newest `max` grid lines as text, oldest first, colours dropped.
-    pub fn text_lines(&self, max: usize) -> Vec<String> {
-        if self.alt_screen() || max == 0 {
-            return Vec::new();
-        }
-        let grid = self.term.grid();
-        let bottom = grid.bottommost_line();
-        let mut line = grid.topmost_line();
-        if (bottom.0 - line.0) as usize >= max {
-            line = Line(bottom.0 - max as i32 + 1);
-        }
-        let mut out = Vec::new();
-        while line <= bottom {
-            let text: String = grid[line][..].iter().map(|cell| cell.c).collect();
-            out.push(text.trim_end().to_string());
-            line += 1;
-        }
-        out
-    }
-
     /// Ask the pane to redraw itself once its first client has attached, so the
     /// prompt does not sit under the saved history.
     pub fn mark_restored(&mut self) {
@@ -277,12 +259,7 @@ impl Pane {
         let Some(recorder) = self.recorder.as_mut() else {
             return;
         };
-        // The alternate screen would record a full-screen program's redraws.
-        if self.term.mode().contains(TermMode::ALT_SCREEN) {
-            recorder.reset();
-        } else {
-            recorder.feed(bytes);
-        }
+        recorder.feed(bytes);
     }
 
     pub fn write(&mut self, bytes: &[u8]) -> std::io::Result<()> {

@@ -40,9 +40,9 @@ impl Session {
     /// The recording a new pane of the active workspace needs, if it records.
     pub(super) fn new_record_target(&self, pane: u64) -> Option<RecordTarget> {
         let workspace = self.workspaces.get(self.active)?;
-        workspace.record.then(|| {
-            RecordTarget::new(&self.record_root, &workspace.name, workspace.id, pane)
-        })
+        workspace
+            .record
+            .then(|| RecordTarget::new(&self.record_root, &workspace.name, workspace.id, pane))
     }
 
     pub(super) fn build_tab(
@@ -71,12 +71,7 @@ impl Session {
         let area = self.content_area();
         let alias = self.active_alias();
         let record = self.new_record_target(self.next_pane);
-        let tab = self.build_tab(
-            "shell",
-            area,
-            Launch::with_alias(alias.as_deref()),
-            record,
-        )?;
+        let tab = self.build_tab("shell", area, Launch::with_alias(alias.as_deref()), record)?;
         let active = self.active;
         let workspace = &mut self.workspaces[active];
         workspace.previous_tab = Some(workspace.active);
@@ -216,6 +211,35 @@ impl Session {
         workspace.active = index;
         self.resize_active();
         self.invalidate();
+        self.dirty = true;
+    }
+
+    /// Flip the recording flag of one workspace and apply it to the panes that
+    /// already run, the tiled ones and the floating one.
+    pub(super) fn apply_record(&mut self, workspace_id: u64) {
+        let root = self.record_root.clone();
+        let Some(workspace) = self
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == workspace_id)
+        else {
+            return;
+        };
+        workspace.record = !workspace.record;
+        let on = workspace.record;
+        let name = workspace.name.clone();
+        let id = workspace.id;
+        for tab in &mut workspace.tabs {
+            for pane in tab.panes.iter_mut().chain(tab.floating.as_mut()) {
+                if on {
+                    let pane_id = pane.id();
+                    pane.start_recording(RecordTarget::new(&root, &name, id, pane_id));
+                } else {
+                    pane.stop_recording();
+                }
+            }
+        }
+        self.pending_save = true;
         self.dirty = true;
     }
 

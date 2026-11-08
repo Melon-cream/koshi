@@ -91,7 +91,7 @@ def make_archive(start, text):
     with open(os.path.join(member, "1-120000.log"), "w", encoding="utf-8") as handle:
         handle.write(text + "\n")
     path = archive_path(start)
-    subprocess.run(["tar", "-czf", path, "-C", staging, "."], check=True)
+    subprocess.run(["tar", "-czf", path, "-C", staging, pack_label(start)], check=True)
     return path
 
 
@@ -184,8 +184,9 @@ def scenario_retention(res):
         res.check("the session starts", wait_status(client, "[NORMAL] main"), status_line(client))
         res.check("an expired archive is deleted", wait_for(lambda: not os.path.exists(old)), old)
         res.check("an archive inside the window survives", os.path.exists(fresh), fresh)
+        bodies = [name for name in members(fresh) if name.endswith(".log")] if os.path.exists(fresh) else []
         res.check("the surviving archive is readable",
-                  os.path.exists(fresh) and "FRESH-ARCHIVE" in member_text(fresh, members(fresh)[0]),
+                  bodies and "FRESH-ARCHIVE" in member_text(fresh, bodies[0]),
                   fresh)
         client.send("exit\n")
         client.wait_exit(10)
@@ -218,7 +219,7 @@ def scenario_show_reads_archive(res):
                   pump_until(viewer, lambda c: "p7" in c.screen.text(), 5.0),
                   viewer.screen.text())
         viewer.send("q")
-        res.check("the viewer quits", viewer.wait_exit(10) is not None, viewer.exit_code)
+        res.check("the viewer quits", viewer.wait_exit(10) is not None, str(viewer.exit_code))
     finally:
         viewer.close()
 

@@ -106,11 +106,9 @@ impl Session {
             if !leaves.contains(&saved_pane.id) {
                 continue;
             }
-            let record = record
-                .as_ref()
-                .map(|(name, workspace)| {
-                    RecordTarget::new(&self.record_root, name, *workspace, saved_pane.id)
-                });
+            let record = record.as_ref().map(|(name, workspace)| {
+                RecordTarget::new(&self.record_root, name, *workspace, saved_pane.id)
+            });
             let init = PaneInit {
                 cols: saved_pane.cols,
                 rows: saved_pane.rows,

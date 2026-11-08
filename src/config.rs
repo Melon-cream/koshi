@@ -24,7 +24,6 @@ pub struct Config {
     /// Root of the pane recordings; `None` keeps the state directory default.
     pub record_root: Option<PathBuf>,
     /// Days a weekly archive is kept; 0 keeps every archive.
-    #[allow(dead_code, reason = "read by the weekly archive step")]
     pub record_retain_days: u32,
 }
 
@@ -160,7 +159,8 @@ mod tests {
 
     #[test]
     fn reads_the_record_keys() {
-        let config = Config::parse("record_root = \"/tmp/koshi-record\"\nrecord_retain_days = 30").unwrap();
+        let config =
+            Config::parse("record_root = \"/tmp/koshi-record\"\nrecord_retain_days = 30").unwrap();
         assert_eq!(
             config.record_root.as_deref(),
             Some(std::path::Path::new("/tmp/koshi-record"))

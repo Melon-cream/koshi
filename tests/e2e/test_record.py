@@ -276,28 +276,34 @@ def scenario_new_pane_records(res):
 
 def scenario_alternate_screen(res):
     begin("the alternate screen is not recorded and recording resumes after it")
+    marker = "/tmp/koshi-alt-%d.txt" % os.getpid()
     client = Client()
     try:
         res.check("the session starts", wait_status(client, "[NORMAL] main"), status_line(client))
+        client.send("printf 'HIDDEN-SECRET\\n' > %s\n" % marker)
+        client.pump(0.4)
         res.check("the record flag turns on", set_record(client, True))
-        client.send("printf '\\033[?1049h'\\n")
+
+        client.send("less %s\n" % marker)
+        res.check("the pager draws on the alternate screen", wait_text(client, "HIDDEN-SECRET"))
+        client.send("q")
         client.pump(0.4)
-        client.send("printf 'HIDDEN-LINE\\n'\\n")
-        client.pump(0.4)
-        client.send("printf '\\033[?1049l'\\n")
-        client.pump(0.4)
-        client.send("printf 'AFTER-ALT\\n'\\n")
+        client.send("printf 'AFTER-ALT\\n'\n")
         res.check("the pane prints after leaving the alternate screen",
                   wait_text(client, "AFTER-ALT"))
         res.check("the recording catches up after the alternate screen",
                   any_log_has("AFTER-ALT"), "logs=%r" % logs())
         res.check("the alternate screen text is not recorded",
-                  not any_log_has("HIDDEN-LINE", timeout=0.5),
+                  not any_log_has("HIDDEN-SECRET", timeout=0.5),
                   "\n".join(read(path) for path in logs()))
         client.send("exit\n")
         client.wait_exit(10)
     finally:
         client.close()
+        try:
+            os.unlink(marker)
+        except OSError:
+            pass
 
 
 def scenario_off_stops_running_pane(res):
@@ -355,7 +361,15 @@ def scenario_floating_pane_toggle(res):
                   any_log_has("FLOAT-AFTER"), "logs=%r" % logs())
         names = [os.path.basename(path) for path in logs()]
         res.check("the floating pane has its own file",
-                  names and all(name.startswith("2-") for name in names), "names=%r" % names)
+                  any(name.startswith("2-") for name in names), "names=%r" % names)
+        float_logs = [path for path in logs() if os.path.basename(path).startswith("2-")]
+        res.check("the float's output is in the float's file",
+                  float_logs and all("FLOAT-AFTER" in read(path) for path in float_logs),
+                  "\n".join(read(path) for path in float_logs))
+        tiled = [path for path in logs() if os.path.basename(path).startswith("1-")]
+        res.check("the tiled pane does not hold the float's output",
+                  all("FLOAT-AFTER" not in read(path) for path in tiled),
+                  "\n".join(read(path) for path in tiled))
         res.check("the float's earlier output stays out",
                   not any_log_has("FLOAT-BEFORE", timeout=0.5),
                   "\n".join(read(path) for path in logs()))

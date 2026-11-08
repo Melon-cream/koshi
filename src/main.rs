@@ -4,12 +4,14 @@ mod control;
 mod overlay_geom;
 mod paths;
 mod protocol;
+mod record;
 mod server;
 
 use std::process::ExitCode;
 
 const USAGE: &str = "usage:
   koshi                  attach to the server, starting it when needed
+  koshi record show [workspace] [date]
   koshi kill             stop the running server
   koshi server [--daemon]
   koshi --version";
@@ -42,6 +44,18 @@ async fn run() -> anyhow::Result<i32> {
                 return unknown_argument(extra);
             }
             control::kill().await
+        }
+        Some("record") => {
+            if args.get(1).map(String::as_str) != Some("show") {
+                eprintln!("koshi: `record` only takes `show`");
+                eprintln!("{USAGE}");
+                return Ok(2);
+            }
+            let rest = &args[2..];
+            if rest.len() > 2 {
+                return unknown_argument(&rest[2]);
+            }
+            client::show::run(config::Config::load(), rest).await
         }
         Some("server") => {
             let daemon = match args.get(1).map(String::as_str) {

@@ -108,27 +108,20 @@ impl Session {
 
     /// Enter on the settings screen: edit the alias, or flip recording.
     pub(super) fn settings_edit(&mut self, id: u64) {
-        let Some((workspace, selected)) = self.client_mut(id).and_then(|client| match client.input {
-            InputState::Settings {
-                workspace,
-                selected,
-                ..
-            } => Some((workspace, selected)),
-            _ => None,
-        }) else {
+        let Some((workspace, selected)) =
+            self.client_mut(id).and_then(|client| match client.input {
+                InputState::Settings {
+                    workspace,
+                    selected,
+                    ..
+                } => Some((workspace, selected)),
+                _ => None,
+            })
+        else {
             return;
         };
         if selected == RECORD_ROW {
-            if let Some(entry) = self
-                .workspaces
-                .iter_mut()
-                .find(|entry| entry.id == workspace)
-            {
-                entry.record = !entry.record;
-            }
-            // The flag is part of the state file, and new panes read it.
-            self.pending_save = true;
-            self.dirty = true;
+            self.apply_record(workspace);
             return;
         }
         let buffer = self

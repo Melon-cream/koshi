@@ -228,10 +228,34 @@ def scenario_unknown_workspace(res):
     viewer = Client(args=("record", "show", "no-such-workspace"))
     try:
         code = viewer.wait_exit(10)
-        res.check("the viewer fails", code == 1, code)
+        res.check("the viewer fails", code == 1, str(code))
         res.check("the viewer says what is missing",
                   pump_until(viewer, lambda c: "no recordings" in c.screen.text(), 3.0),
                   viewer.screen.text())
+    finally:
+        viewer.close()
+
+
+def scenario_length_mismatch(res):
+    begin("a body and sidecar of different lengths show the shorter run and warn")
+    day = datetime.date.today()
+    directory = os.path.join(RECORD_ROOT, day.strftime("%Y%m%d"), "main-1")
+    os.makedirs(directory, mode=0o700)
+    with open(os.path.join(directory, "7-120000.log"), "w", encoding="utf-8") as handle:
+        handle.write("FIRST-LINE\nSECOND-LINE\nTHIRD-LINE\n")
+    with open(os.path.join(directory, "7-120000.times"), "w", encoding="utf-8") as handle:
+        handle.write("%sT12:00:00+09:00\n" % day.isoformat())
+
+    viewer = Client(args=("record", "show", "main", day.isoformat()))
+    try:
+        res.check("the shorter run is shown", wait_text(viewer, "FIRST-LINE"),
+                  viewer.screen.text())
+        res.check("a line past the sidecar is left out",
+                  not wait_text(viewer, "THIRD-LINE", timeout=0.5), viewer.screen.text())
+        res.check("the mismatch is reported", wait_text(viewer, "warning:"),
+                  viewer.screen.text())
+        viewer.send("q")
+        res.check("the viewer quits", viewer.wait_exit(10) == 0, str(viewer.exit_code))
     finally:
         viewer.close()
 
@@ -242,6 +266,7 @@ def main():
         scenario_browse_and_read(res)
         scenario_direct_arguments(res)
         scenario_live_tail(res)
+        scenario_length_mismatch(res)
         scenario_unknown_workspace(res)
     finally:
         cleanup()
