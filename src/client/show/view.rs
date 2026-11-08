@@ -140,10 +140,7 @@ impl Viewer {
                 out.push(format!("pane {pane}"));
                 previous = Some(pane);
             }
-            out.push(format!(
-                "{time}  p{pane}{}  {text}",
-                if live { "+" } else { "" }
-            ));
+            out.push(format!("{time}{}  {text}", if live { "+" } else { "" }));
         }
         out
     }

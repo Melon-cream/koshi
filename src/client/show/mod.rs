@@ -97,7 +97,7 @@ impl Viewer {
             date: None,
             log: None,
             live: Arc::new(Mutex::new(BTreeMap::new())),
-            mode: Mode::Chronological,
+            mode: Mode::PerPane,
             offset: 0,
             selected: 0,
             screen: Screen::Workspaces,

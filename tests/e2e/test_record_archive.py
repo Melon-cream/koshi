@@ -215,6 +215,10 @@ def scenario_show_reads_archive(res):
         res.check("the archived day opens directly",
                   pump_until(viewer, lambda c: "ARCHIVED-SHOW-LINE" in c.screen.text(), 10.0),
                   viewer.screen.text())
+        viewer.send(b"\t")
+        res.check("Tab reaches the chronological view",
+                  pump_until(viewer, lambda c: "[CHRONO]" in c.screen.text(), 5.0),
+                  viewer.screen.text())
         res.check("the archived line keeps its pane and time",
                   pump_until(viewer, lambda c: "p7" in c.screen.text(), 5.0),
                   viewer.screen.text())

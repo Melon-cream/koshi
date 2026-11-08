@@ -48,6 +48,19 @@ def wait_status(client, needle, timeout=10.0):
     return pump_until(client, lambda c: needle in status_line(c), timeout)
 
 
+def per_pane_line(client, body, live=False):
+    """The Per-pane row for `body`: a clock, then the text, with no pane id.
+
+    A live row is the pane's current shell line, so `body` sits inside it
+    rather than at the end; only the clock and the `+` marker are anchored.
+    """
+    if live:
+        pattern = r"^\d\d:\d\d:\d\d\+  [^\n]*%s" % re.escape(body)
+    else:
+        pattern = r"^\d\d:\d\d:\d\d  %s\s*$" % re.escape(body)
+    return re.compile(pattern, re.M).search(client.screen.text())
+
+
 def logs():
     return sorted(glob.glob(os.path.join(RECORD_ROOT, "*", "main-1", "*.log")))
 
@@ -127,14 +140,25 @@ def scenario_browse_and_read(res):
         res.check("Enter opens the log", wait_text(viewer, "SHOW-ONE"), viewer.screen.text())
         res.check("the log keeps the recorded order", wait_text(viewer, "SHOW-TWO"),
                   viewer.screen.text())
+        res.check("the log opens in per pane", wait_text(viewer, "[PER-PANE]"),
+                  viewer.screen.text())
+        res.check("the pane block header stays", wait_text(viewer, "pane 1"), viewer.screen.text())
+        res.check("a per pane line carries its time and text but no pane id",
+                  pump_until(viewer, lambda c: per_pane_line(c, "SHOW-ONE") is not None),
+                  viewer.screen.text())
+        res.check("the second per pane line keeps the recorded order",
+                  pump_until(viewer, lambda c: per_pane_line(c, "SHOW-TWO") is not None),
+                  viewer.screen.text())
+
+        viewer.send(TAB)
+        res.check("Tab switches to chronological", wait_text(viewer, "[CHRONO]"),
+                  viewer.screen.text())
         res.check("a line carries its time", pump_until(
             viewer, lambda c: CLOCK.search(c.screen.text()) is not None), viewer.screen.text())
         res.check("a line carries its pane", wait_text(viewer, "p1"), viewer.screen.text())
-
         viewer.send(TAB)
-        res.check("Tab switches to per pane", wait_text(viewer, "[PER-PANE]"), viewer.screen.text())
-        viewer.send(TAB)
-        res.check("Tab switches back", wait_text(viewer, "[CHRONO]"), viewer.screen.text())
+        res.check("Tab switches back to per pane", wait_text(viewer, "[PER-PANE]"),
+                  viewer.screen.text())
 
         viewer.send(ESC)
         res.check("Esc returns to the dates", wait_text(viewer, today), viewer.screen.text())
@@ -205,6 +229,17 @@ def scenario_live_tail(res):
                   viewer.screen.text())
         res.check("the viewer adds the running pane's current line",
                   wait_text(viewer, "LIVE-PARTIAL"), viewer.screen.text())
+        res.check("the log opens in per pane", wait_text(viewer, "[PER-PANE]"),
+                  viewer.screen.text())
+        res.check("the live line keeps its marker and drops the pane id",
+                  pump_until(viewer, lambda c: per_pane_line(c, "LIVE-PARTIAL", live=True) is not None),
+                  viewer.screen.text())
+        res.check("the recorded line beside it drops the pane id too",
+                  pump_until(viewer, lambda c: per_pane_line(c, "SETTLED-LINE") is not None),
+                  viewer.screen.text())
+        viewer.send(TAB)
+        res.check("Tab switches to chronological", wait_text(viewer, "[CHRONO]"),
+                  viewer.screen.text())
         res.check("the current line is marked as live", wait_text(viewer, "p1+"),
                   viewer.screen.text())
         viewer.send("q")
