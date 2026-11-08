@@ -3,6 +3,8 @@
 ## Branches
 
 - Work on a branch other than `main`. Create one before you start.
+- `main` is protected: a change only lands through a pull request. Pushing a branch is not enough,
+  so open the pull request in the same step.
 - `main` carries no commits until a release. Leave it alone until you are asked to release.
 
 ## Build
