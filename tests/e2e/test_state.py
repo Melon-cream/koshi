@@ -216,7 +216,7 @@ def scenario_permissions(res):
 
     data = state_bytes()
     res.check("the header is the magic plus the current format version",
-              data[:6] == MAGIC and data[6:7] == b"\x01", "head=%r" % data[:8])
+              data[:6] == MAGIC and data[6:7] == b"\x02", "head=%r" % data[:8])
     length = int.from_bytes(data[8:12], "little")
     res.check("the payload length matches the file size",
               len(data) == 12 + length + 8, "len=%d payload=%d" % (len(data), length))

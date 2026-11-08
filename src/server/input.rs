@@ -13,6 +13,7 @@ use crate::protocol::KeyCode;
 use crate::server::focus::Side;
 use crate::server::keymap::{group_of, leader_command, leader_key_command};
 use crate::server::layout::Dir;
+use crate::server::state::MAX_ALIAS_BYTES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LeaderKind {
@@ -49,7 +50,17 @@ impl LeaderKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextTarget {
     Tab,
+    /// Index into the workspace list.
     Workspace(usize),
+    /// Workspace id, which a rename does not change.
+    SshAlias(u64),
+}
+
+/// Result of the one `ssh -G` check that follows an alias edit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AliasCheck {
+    pub alias: String,
+    pub ok: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,7 +94,12 @@ pub enum Command {
     OverlayCreate,
     OverlayBeginRename,
     OverlayDelete,
+    OverlaySettings,
     CloseOverlay,
+    SettingsUp,
+    SettingsDown,
+    SettingsEdit,
+    CloseSettings,
     CommitText(TextTarget, String),
     CancelText(TextTarget),
 }
@@ -94,6 +110,13 @@ pub enum InputState {
     /// Waiting for the second key of a leader group.
     Leader(LeaderKind),
     Overlay,
+    /// Per-workspace settings screen; `workspace` and `selected` are indices
+    /// into the items it shows.
+    Settings {
+        workspace: u64,
+        selected: usize,
+        check: Option<AliasCheck>,
+    },
     Text {
         target: TextTarget,
         buffer: String,
@@ -152,7 +175,18 @@ impl InputState {
                         b'n' => Some(Command::OverlayCreate),
                         b'r' => Some(Command::OverlayBeginRename),
                         b'd' => Some(Command::OverlayDelete),
+                        b'c' => Some(Command::OverlaySettings),
                         b'q' | 0x1b => Some(Command::CloseOverlay),
+                        _ => None,
+                    };
+                    if let Some(command) = command {
+                        out.push(command);
+                    }
+                }
+                Self::Settings { .. } => {
+                    let command = match byte {
+                        b'\r' | b'\n' => Some(Command::SettingsEdit),
+                        0x1b => Some(Command::CloseSettings),
                         _ => None,
                     };
                     if let Some(command) = command {
@@ -163,16 +197,28 @@ impl InputState {
                     0x1b | 0x03 => out.push(Command::CancelText(*target)),
                     b'\r' | b'\n' => {
                         let name = buffer.trim().to_string();
-                        if name.is_empty() {
-                            out.push(Command::CancelText(*target));
-                        } else {
-                            out.push(Command::CommitText(*target, name));
+                        match target {
+                            // An empty alias is how a workspace goes back to a
+                            // local shell, so it commits instead of cancelling.
+                            TextTarget::SshAlias(_) if name.is_empty() => {
+                                out.push(Command::CommitText(*target, String::new()));
+                            }
+                            _ if name.is_empty() => out.push(Command::CancelText(*target)),
+                            _ => out.push(Command::CommitText(*target, name)),
                         }
                     }
                     0x7f | 0x08 => {
                         buffer.pop();
                     }
-                    0x20..=0x7e => buffer.push(byte as char),
+                    0x20..=0x7e => {
+                        let limit = match target {
+                            TextTarget::SshAlias(_) => MAX_ALIAS_BYTES,
+                            _ => usize::MAX,
+                        };
+                        if buffer.len() + 1 <= limit {
+                            buffer.push(byte as char);
+                        }
+                    }
                     _ => {}
                 },
             }
@@ -210,6 +256,11 @@ impl InputState {
             Self::Overlay => match key {
                 KeyCode::Up => out.push(Command::OverlayUp),
                 KeyCode::Down => out.push(Command::OverlayDown),
+                _ => {}
+            },
+            Self::Settings { .. } => match key {
+                KeyCode::Up => out.push(Command::SettingsUp),
+                KeyCode::Down => out.push(Command::SettingsDown),
                 _ => {}
             },
             Self::Text { .. } => {}

@@ -8,6 +8,7 @@ mod frames;
 mod geom;
 mod input;
 mod keymap;
+mod launch;
 mod layout;
 mod mouse;
 mod mouse_encode;

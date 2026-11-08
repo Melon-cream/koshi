@@ -1,7 +1,10 @@
-//! Workspace list and the inline name input.
+//! Workspace list, the inline name input, and the workspace settings screen.
 
-use crate::server::input::{InputState, TextTarget};
+use std::process::{Command, Stdio};
+
+use crate::server::input::{AliasCheck, InputState, TextTarget};
 use crate::server::session::Session;
+use crate::server::tab::Workspace;
 
 impl Session {
     pub(super) fn overlay_move(&mut self, id: u64, delta: isize) {
@@ -63,6 +66,59 @@ impl Session {
         self.invalidate();
     }
 
+    /// Open the settings screen of the workspace selected in the list.
+    pub(super) fn open_settings(&mut self, id: u64) {
+        let selected = self
+            .client_mut(id)
+            .map(|client| client.overlay_selected)
+            .unwrap_or(0);
+        let Some(workspace) = self.workspaces.get(selected) else {
+            return;
+        };
+        let workspace_id = workspace.id;
+        if let Some(client) = self.client_mut(id) {
+            client.input = InputState::Settings {
+                workspace: workspace_id,
+                selected: 0,
+                check: None,
+            };
+        }
+        self.dirty = true;
+    }
+
+    /// Start editing the one item of the settings screen.
+    pub(super) fn settings_edit(&mut self, id: u64) {
+        let Some(workspace) = self.client_mut(id).and_then(|client| match client.input {
+            InputState::Settings { workspace, .. } => Some(workspace),
+            _ => None,
+        }) else {
+            return;
+        };
+        let buffer = self
+            .workspace_by_id(workspace)
+            .and_then(|workspace| workspace.ssh_alias.clone())
+            .unwrap_or_default();
+        if let Some(client) = self.client_mut(id) {
+            client.input = InputState::Text {
+                target: TextTarget::SshAlias(workspace),
+                buffer,
+            };
+        }
+        self.dirty = true;
+    }
+
+    pub(super) fn close_settings(&mut self, id: u64) {
+        if let Some(client) = self.client_mut(id) {
+            client.input = InputState::Overlay;
+        }
+        self.dirty = true;
+    }
+
+    /// The workspace the settings screen belongs to.
+    pub(super) fn workspace_by_id(&self, id: u64) -> Option<&Workspace> {
+        self.workspaces.iter().find(|workspace| workspace.id == id)
+    }
+
     pub(super) fn commit_text(&mut self, id: u64, target: TextTarget, name: String) {
         match target {
             TextTarget::Tab => {
@@ -81,6 +137,28 @@ impl Session {
                     client.input = InputState::Overlay;
                 }
             }
+            TextTarget::SshAlias(workspace_id) => {
+                let alias = (!name.is_empty()).then_some(name);
+                if let Some(workspace) = self
+                    .workspaces
+                    .iter_mut()
+                    .find(|workspace| workspace.id == workspace_id)
+                {
+                    workspace.ssh_alias.clone_from(&alias);
+                }
+                // A failed check is only a warning; the alias stays saved.
+                let check = alias.map(|alias| AliasCheck {
+                    ok: alias_reaches_ssh(&alias),
+                    alias,
+                });
+                if let Some(client) = self.client_mut(id) {
+                    client.input = InputState::Settings {
+                        workspace: workspace_id,
+                        selected: 0,
+                        check,
+                    };
+                }
+            }
         }
         self.dirty = true;
     }
@@ -89,10 +167,29 @@ impl Session {
         let next = match target {
             TextTarget::Tab => InputState::Normal,
             TextTarget::Workspace(_) => InputState::Overlay,
+            TextTarget::SshAlias(workspace) => InputState::Settings {
+                workspace,
+                selected: 0,
+                check: None,
+            },
         };
         if let Some(client) = self.client_mut(id) {
             client.input = next;
         }
         self.dirty = true;
     }
+}
+
+/// Ask `ssh` whether it can resolve the alias. Output is dropped: it can hold
+/// the expanded configuration and is not stored or logged.
+fn alias_reaches_ssh(alias: &str) -> bool {
+    Command::new("ssh")
+        .arg("-G")
+        .arg(alias)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }

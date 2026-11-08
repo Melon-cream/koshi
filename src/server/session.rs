@@ -10,6 +10,7 @@ use crate::config::Leader;
 use crate::protocol::{BorderCell, CellData, CursorPos, Overlay, Rect, ServerMsg, Status};
 use crate::server::geom::Geometry;
 use crate::server::input::InputState;
+use crate::server::launch::Launch;
 use crate::server::pane::{Pane, PaneSignal};
 use crate::server::resize::Resize;
 use crate::server::select::Drag;
@@ -58,6 +59,7 @@ pub(super) struct Session {
     pub(super) signals: UnboundedSender<PaneSignal>,
     pub(super) screen: Size,
     pub(super) next_pane: u64,
+    pub(super) next_workspace: u64,
     pub(super) leader: Leader,
 }
 
@@ -87,6 +89,7 @@ impl Session {
                 rows: rows.max(2),
             },
             next_pane: 1,
+            next_workspace: 2,
             leader,
         };
         let restored = match loaded.state {
@@ -95,13 +98,16 @@ impl Session {
         };
         if !restored {
             let area = session.content_area();
-            let tab = session.build_tab("shell", area)?;
+            let tab = session.build_tab("shell", area, Launch::Shell { cwd: None })?;
             session.workspaces.push(Workspace {
+                id: 1,
                 name: "main".to_string(),
+                ssh_alias: None,
                 tabs: vec![tab],
                 active: 0,
                 previous_tab: None,
             });
+            session.next_workspace = 2;
         }
         Ok(session)
     }
