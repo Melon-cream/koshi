@@ -1,13 +1,16 @@
 //! Session state: clients, workspaces, and the operations that change them.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config::Leader;
-use crate::protocol::{BorderCell, CellData, CursorPos, Overlay, Rect, ServerMsg, Status};
+use crate::protocol::{
+    BorderCell, CellData, CursorPos, Overlay, PaneTail, Rect, ServerMsg, Status,
+};
 use crate::server::geom::Geometry;
 use crate::server::input::InputState;
 use crate::server::launch::Launch;
@@ -44,6 +47,12 @@ pub(super) struct Client {
     pub(super) report: Option<u64>,
 }
 
+/// Where recordings go and how long their archives are kept.
+pub(super) struct RecordSettings {
+    pub(super) root: PathBuf,
+    pub(super) retain_days: u32,
+}
+
 pub(super) struct Session {
     pub(super) workspaces: Vec<Workspace>,
     pub(super) active: usize,
@@ -61,6 +70,10 @@ pub(super) struct Session {
     pub(super) next_pane: u64,
     pub(super) next_workspace: u64,
     pub(super) leader: Leader,
+    /// Root of the pane recordings.
+    pub(super) record_root: PathBuf,
+    /// Days a weekly archive is kept; 0 keeps every archive.
+    pub(super) retain_days: u32,
 }
 
 impl Session {
@@ -69,6 +82,7 @@ impl Session {
         scroll_lines: usize,
         signals: UnboundedSender<PaneSignal>,
         leader: Leader,
+        record: RecordSettings,
         cols: u16,
         rows: u16,
     ) -> Result<Self> {
@@ -91,6 +105,8 @@ impl Session {
             next_pane: 1,
             next_workspace: 2,
             leader,
+            record_root: record.root,
+            retain_days: record.retain_days,
         };
         let restored = match loaded.state {
             Some(saved) => session.restore(saved),
@@ -98,11 +114,12 @@ impl Session {
         };
         if !restored {
             let area = session.content_area();
-            let tab = session.build_tab("shell", area, Launch::Shell { cwd: None })?;
+            let tab = session.build_tab("shell", area, Launch::Shell { cwd: None }, None)?;
             session.workspaces.push(Workspace {
                 id: 1,
                 name: "main".to_string(),
                 ssh_alias: None,
+                record: false,
                 tabs: vec![tab],
                 active: 0,
                 previous_tab: None,
@@ -327,6 +344,41 @@ impl Session {
                 }
             }
         }
+    }
+
+    /// Hand every recording to the kernel before the archive step reads them.
+    pub fn flush_recorders(&mut self) {
+        for workspace in &mut self.workspaces {
+            for tab in &mut workspace.tabs {
+                for pane in tab.panes.iter_mut().chain(tab.floating.as_mut()) {
+                    pane.flush_recording();
+                }
+            }
+        }
+    }
+
+    /// The unfinished line of every running pane of one workspace.
+    pub fn record_tail(&self, workspace_id: u64) -> Vec<PaneTail> {
+        let Some(workspace) = self
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == workspace_id)
+        else {
+            return Vec::new();
+        };
+        let mut lines = Vec::new();
+        for tab in &workspace.tabs {
+            for pane in tab.panes.iter().chain(tab.floating.as_ref()) {
+                if let Some(line) = pane.current_line() {
+                    lines.push(PaneTail {
+                        pane: pane.id(),
+                        line,
+                    });
+                }
+            }
+        }
+        lines.sort_by_key(|tail| tail.pane);
+        lines
     }
 
     pub(super) fn toast_text(&self) -> Option<String> {

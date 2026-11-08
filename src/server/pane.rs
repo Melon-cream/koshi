@@ -1,6 +1,8 @@
 //! One pane: the PTY, the terminal state, and the reader thread.
 
+mod record;
 mod render;
+mod text;
 
 use std::fs;
 use std::io::{Read, Write};
@@ -8,7 +10,7 @@ use std::thread;
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::index::{Column, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::Config as TermConfig;
 use alacritty_terminal::term::{Term, TermMode, viewport_to_point};
@@ -18,6 +20,7 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system}
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::server::launch::Launch;
+use crate::server::record::{RecordTarget, Recorder};
 
 /// Signals produced by a pane outside of its command channel.
 pub enum PaneSignal {
@@ -52,6 +55,8 @@ pub struct PaneInit<'a> {
     pub launch: Launch<'a>,
     /// Restored history, fed before the reader thread starts.
     pub lines: &'a [String],
+    /// Set when the workspace records this pane's output.
+    pub record: Option<RecordTarget>,
 }
 
 impl Dimensions for PaneSize {
@@ -81,6 +86,8 @@ pub struct Pane {
     restored: bool,
     /// Armed after the first attach; the next server tick sends the Ctrl-L.
     clear_pending: bool,
+    /// Set when the workspace records this pane's output.
+    recorder: Option<Recorder>,
 }
 
 impl Pane {
@@ -148,6 +155,16 @@ impl Pane {
         );
         feed_history(&mut term, init.lines);
         let processor: Processor = Processor::new();
+        let recorder = match init.record {
+            Some(target) => match Recorder::start(&target) {
+                Ok(recorder) => Some(recorder),
+                Err(err) => {
+                    eprintln!("koshi: cannot record pane {id}: {err}");
+                    None
+                }
+            },
+            None => None,
+        };
 
         thread::spawn(move || {
             let mut buf = [0u8; 65536];
@@ -180,6 +197,7 @@ impl Pane {
             exited: false,
             restored: false,
             clear_pending: false,
+            recorder,
         })
     }
 
@@ -195,26 +213,6 @@ impl Pane {
         let pid = self.child.process_id()?;
         let path = fs::read_link(format!("/proc/{pid}/cwd")).ok()?;
         path.to_str().map(str::to_string)
-    }
-
-    /// The newest `max` grid lines as text, oldest first, colours dropped.
-    pub fn text_lines(&self, max: usize) -> Vec<String> {
-        if self.alt_screen() || max == 0 {
-            return Vec::new();
-        }
-        let grid = self.term.grid();
-        let bottom = grid.bottommost_line();
-        let mut line = grid.topmost_line();
-        if (bottom.0 - line.0) as usize >= max {
-            line = Line(bottom.0 - max as i32 + 1);
-        }
-        let mut out = Vec::new();
-        while line <= bottom {
-            let text: String = grid[line][..].iter().map(|cell| cell.c).collect();
-            out.push(text.trim_end().to_string());
-            line += 1;
-        }
-        out
     }
 
     /// Ask the pane to redraw itself once its first client has attached, so the
@@ -258,6 +256,10 @@ impl Pane {
 
     pub fn process(&mut self, bytes: &[u8]) {
         self.processor.advance(&mut self.term, bytes);
+        let Some(recorder) = self.recorder.as_mut() else {
+            return;
+        };
+        recorder.feed(bytes);
     }
 
     pub fn write(&mut self, bytes: &[u8]) -> std::io::Result<()> {
@@ -359,6 +361,10 @@ impl Pane {
 
 impl Drop for Pane {
     fn drop(&mut self) {
+        // The pane is going away, so its last line can no longer change.
+        if let Some(recorder) = self.recorder.as_mut() {
+            recorder.finish();
+        }
         // Dropping the master also hangs up the child, but kill it explicitly
         // so closed panes and workspaces do not leave processes behind.
         let _ = self.child.kill();

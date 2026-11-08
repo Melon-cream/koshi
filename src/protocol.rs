@@ -45,6 +45,11 @@ pub enum ClientMsg {
         rows: u16,
     },
     Detach,
+    /// Ask for the unfinished line of every running pane of one workspace.
+    /// A viewer sends this without a `Hello`, so it never receives frames.
+    RecordTail {
+        workspace: u64,
+    },
 }
 
 /// A key that leaves the client as a typed value instead of raw bytes.
@@ -118,6 +123,17 @@ pub enum ServerMsg {
     /// Every pane is gone.
     Exited,
     Error(String),
+    /// Answer to `ClientMsg::RecordTail`: the unfinished line of each pane.
+    RecordTail {
+        panes: Vec<PaneTail>,
+    },
+}
+
+/// One running pane's unfinished line, as its screen shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneTail {
+    pub pane: u64,
+    pub line: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

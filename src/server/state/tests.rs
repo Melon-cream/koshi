@@ -224,7 +224,20 @@ fn saved_workspace(id: u64, name: &str, alias: Option<&str>) -> SavedWorkspace {
 
 fn session() -> Session {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    Session::new(100, 1, tx, crate::config::Leader::Ctrl, 80, 24).expect("the test needs a pty")
+    let record_root = std::env::temp_dir().join("koshi-test-record");
+    Session::new(
+        100,
+        1,
+        tx,
+        crate::config::Leader::Ctrl,
+        crate::server::session::RecordSettings {
+            root: record_root,
+            retain_days: 0,
+        },
+        80,
+        24,
+    )
+    .expect("the test needs a pty")
 }
 
 #[test]

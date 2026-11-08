@@ -16,6 +16,7 @@ mod overlay;
 mod pane;
 mod panes;
 mod pointer;
+mod record;
 mod resize;
 mod scroll;
 mod select;
@@ -27,7 +28,9 @@ mod tabs;
 use std::fs;
 use std::io;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use alacritty_terminal::event::Event;
@@ -40,7 +43,7 @@ use crate::paths;
 use crate::protocol::{self, ClientMsg, ServerMsg};
 
 use self::pane::PaneSignal;
-use self::session::Session;
+use self::session::{RecordSettings, Session};
 
 const SIGHUP: i32 = 1;
 const SIG_IGN: usize = 1;
@@ -83,11 +86,17 @@ pub async fn run(daemon: bool) -> Result<i32> {
 
     let (core_tx, core_rx) = mpsc::unbounded_channel();
     let (pane_tx, pane_rx) = mpsc::unbounded_channel();
+    let record_root = config.record_root.clone().unwrap_or_else(paths::record_dir);
+    let retain_days = config.record_retain_days;
     let mut session = match Session::new(
         config.history_lines,
         config.scroll_lines,
         pane_tx,
         config.leader,
+        RecordSettings {
+            root: record_root.clone(),
+            retain_days,
+        },
         80,
         24,
     ) {
@@ -99,7 +108,11 @@ pub async fn run(daemon: bool) -> Result<i32> {
     };
 
     tokio::spawn(accept_loop(listener, core_tx));
-    let result = core_loop(&mut session, core_rx, pane_rx).await;
+    let archive = Archive {
+        root: record_root,
+        busy: Arc::new(AtomicBool::new(false)),
+    };
+    let result = core_loop(&mut session, core_rx, pane_rx, archive).await;
 
     session.shutdown();
     session.save();
@@ -172,15 +185,41 @@ fn spawn_client(stream: UnixStream, core: UnboundedSender<CoreMsg>, id: u64) {
     });
 }
 
+/// The weekly archive step, run off the core loop on a thread of its own.
+struct Archive {
+    root: PathBuf,
+    /// Set while a thread runs, so a slow pass is not started twice.
+    busy: Arc<AtomicBool>,
+}
+
+impl Archive {
+    fn start(&self, retain_days: u32) {
+        if self.busy.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let root = self.root.clone();
+        let busy = Arc::clone(&self.busy);
+        std::thread::spawn(move || {
+            if let Err(err) = crate::record::archive::run(&root, retain_days) {
+                eprintln!("koshi: cannot archive the recordings: {err}");
+            }
+            busy.store(false, Ordering::SeqCst);
+        });
+    }
+}
+
 async fn core_loop(
     session: &mut Session,
     mut core_rx: UnboundedReceiver<CoreMsg>,
     mut pane_rx: UnboundedReceiver<PaneSignal>,
+    archive: Archive,
 ) -> Result<()> {
     let mut ticker = tokio::time::interval(Duration::from_millis(12));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut saver = tokio::time::interval(Duration::from_secs(3));
     saver.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut archive_tick = tokio::time::interval(Duration::from_secs(7 * 24 * 3600));
+    archive_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .context("cannot watch for SIGTERM")?;
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
@@ -212,6 +251,10 @@ async fn core_loop(
                     session.pending_save = false;
                     session.save();
                 }
+            },
+            _ = archive_tick.tick() => {
+                session.flush_recorders();
+                archive.start(session.retain_days);
             },
             _ = ticker.tick() => {
                 if session.poll_panes() {
@@ -260,6 +303,12 @@ fn handle_core_msg(session: &mut Session, msg: CoreMsg) -> bool {
             }
             ClientMsg::Resize { cols, rows } => session.resize(cols, rows),
             ClientMsg::Detach => session.remove_client(id),
+            ClientMsg::RecordTail { workspace } => {
+                let panes = session.record_tail(workspace);
+                if let Some(client) = session.client_mut(id) {
+                    let _ = client.tx.send(ServerMsg::RecordTail { panes });
+                }
+            }
         },
     }
     session.is_empty()

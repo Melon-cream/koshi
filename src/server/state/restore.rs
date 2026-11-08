@@ -5,6 +5,7 @@
 
 use crate::server::launch::Launch;
 use crate::server::pane::{Pane, PaneInit};
+use crate::server::record::RecordTarget;
 use crate::server::session::Session;
 use crate::server::tab::{Tab, Workspace};
 
@@ -15,9 +16,13 @@ impl Session {
     pub(in crate::server) fn restore(&mut self, saved: SavedState) -> bool {
         let mut workspaces = Vec::new();
         for saved_workspace in saved.workspaces {
+            let recorded = saved_workspace.record;
+            let workspace_name = saved_workspace.name.clone();
+            let workspace_id = saved_workspace.id;
+            let record = recorded.then_some((workspace_name.as_str(), workspace_id));
             let mut tabs = Vec::new();
             for saved_tab in saved_workspace.tabs {
-                if let Some(tab) = self.restore_tab(saved_tab) {
+                if let Some(tab) = self.restore_tab(saved_tab, record) {
                     tabs.push(tab);
                 }
             }
@@ -27,9 +32,10 @@ impl Session {
                 }
                 // An SSH workspace keeps its definition without a pane.
                 workspaces.push(Workspace {
-                    id: saved_workspace.id,
-                    name: saved_workspace.name,
+                    id: workspace_id,
+                    name: workspace_name,
                     ssh_alias: saved_workspace.ssh_alias,
+                    record: recorded,
                     tabs: Vec::new(),
                     active: 0,
                     previous_tab: None,
@@ -38,9 +44,10 @@ impl Session {
             }
             let active = saved_workspace.active.min(tabs.len() - 1);
             workspaces.push(Workspace {
-                id: saved_workspace.id,
-                name: saved_workspace.name,
+                id: workspace_id,
+                name: workspace_name,
                 ssh_alias: saved_workspace.ssh_alias,
+                record: recorded,
                 tabs,
                 active,
                 previous_tab: None,
@@ -62,11 +69,12 @@ impl Session {
             .max(2);
         if !has_panes {
             let area = self.content_area();
-            if let Ok(tab) = self.build_tab("shell", area, Launch::Shell { cwd: None }) {
+            if let Ok(tab) = self.build_tab("shell", area, Launch::Shell { cwd: None }, None) {
                 workspaces.push(Workspace {
                     id: next_id,
                     name: "main".to_string(),
                     ssh_alias: None,
+                    record: false,
                     tabs: vec![tab],
                     active: 0,
                     previous_tab: None,
@@ -90,7 +98,7 @@ impl Session {
         true
     }
 
-    fn restore_tab(&mut self, saved: SavedTab) -> Option<Tab> {
+    fn restore_tab(&mut self, saved: SavedTab, record: Option<(&str, u64)>) -> Option<Tab> {
         let mut leaves = Vec::new();
         saved.layout.leaves(&mut leaves);
         let mut panes = Vec::new();
@@ -98,6 +106,9 @@ impl Session {
             if !leaves.contains(&saved_pane.id) {
                 continue;
             }
+            let record = record.as_ref().map(|(name, workspace)| {
+                RecordTarget::new(&self.record_root, name, *workspace, saved_pane.id)
+            });
             let init = PaneInit {
                 cols: saved_pane.cols,
                 rows: saved_pane.rows,
@@ -105,6 +116,7 @@ impl Session {
                     cwd: saved_pane.cwd.as_deref(),
                 },
                 lines: &saved_pane.lines,
+                record,
             };
             match Pane::new(saved_pane.id, self.history, self.signals.clone(), init) {
                 Ok(mut pane) => {

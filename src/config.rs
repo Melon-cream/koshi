@@ -1,7 +1,7 @@
 //! Configuration file parsing. Every failure falls back to defaults.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -21,6 +21,10 @@ pub struct Config {
     pub leader: Leader,
     pub scroll_lines: usize,
     pub history_lines: usize,
+    /// Root of the pane recordings; `None` keeps the state directory default.
+    pub record_root: Option<PathBuf>,
+    /// Days a weekly archive is kept; 0 keeps every archive.
+    pub record_retain_days: u32,
 }
 
 impl Default for Config {
@@ -29,6 +33,8 @@ impl Default for Config {
             leader: Leader::Ctrl,
             scroll_lines: 3,
             history_lines: 10_000,
+            record_root: None,
+            record_retain_days: 0,
         }
     }
 }
@@ -66,7 +72,10 @@ impl Config {
         let value: toml::Value = toml::from_str(text).map_err(|err| err.to_string())?;
         let table = value.as_table().ok_or("expected a table of keys")?;
         for key in table.keys() {
-            if !matches!(key.as_str(), "leader" | "scroll_lines" | "history_lines") {
+            if !matches!(
+                key.as_str(),
+                "leader" | "scroll_lines" | "history_lines" | "record_root" | "record_retain_days"
+            ) {
                 eprintln!("koshi: config: unknown key `{key}` ignored");
             }
         }
@@ -87,6 +96,15 @@ impl Config {
             }
             config.history_lines = lines;
         }
+        if let Some(root) = raw.record_root {
+            if root.is_empty() {
+                return Err("record_root must not be empty".to_string());
+            }
+            config.record_root = Some(PathBuf::from(root));
+        }
+        if let Some(days) = raw.record_retain_days {
+            config.record_retain_days = days;
+        }
         Ok(config)
     }
 }
@@ -96,6 +114,8 @@ struct RawConfig {
     leader: Option<String>,
     scroll_lines: Option<usize>,
     history_lines: Option<usize>,
+    record_root: Option<String>,
+    record_retain_days: Option<u32>,
 }
 
 /// `"C"` for Ctrl leaders, `"A"` for Alt leaders.
@@ -126,13 +146,27 @@ mod tests {
             Config {
                 leader: Leader::Alt,
                 scroll_lines: 5,
-                history_lines: 200
+                history_lines: 200,
+                record_root: None,
+                record_retain_days: 0
             }
         );
         assert_eq!(
             Config::parse("leader = \"C\"").unwrap().leader,
             Leader::Ctrl
         );
+    }
+
+    #[test]
+    fn reads_the_record_keys() {
+        let config =
+            Config::parse("record_root = \"/tmp/koshi-record\"\nrecord_retain_days = 30").unwrap();
+        assert_eq!(
+            config.record_root.as_deref(),
+            Some(std::path::Path::new("/tmp/koshi-record"))
+        );
+        assert_eq!(config.record_retain_days, 30);
+        assert!(Config::parse("record_root = \"\"").is_err());
     }
 
     #[test]

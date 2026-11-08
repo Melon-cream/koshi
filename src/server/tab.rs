@@ -18,6 +18,8 @@ pub(super) struct Workspace {
     pub(super) name: String,
     /// Host alias of `~/.ssh/config`; `Some` makes this an SSH workspace.
     pub(super) ssh_alias: Option<String>,
+    /// Record the output of this workspace's panes.
+    pub(super) record: bool,
     pub(super) tabs: Vec<Tab>,
     pub(super) active: usize,
     /// Tab the client looked at before the current one.
