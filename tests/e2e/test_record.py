@@ -7,9 +7,10 @@ recording root in play. The recordings are read from disk: the suite asserts
 what was written, not what a message claims was written.
 
 The scenarios cover the settled decisions of the logging design: recording is
-off by default and per workspace, the flag turns new panes into recorded panes,
-the sidecar carries one ISO 8601 stamp per line, the files are private, the
-alternate screen stays out, and the flag survives a server restart.
+off by default and per workspace, flipping the flag starts and stops the panes
+that are already running (tiled and floating), the sidecar carries one ISO 8601
+stamp per line, the files are private, the alternate screen stays out, and the
+flag survives a server restart.
 """
 
 import datetime
@@ -73,6 +74,16 @@ def wait_logs(count, timeout=10.0):
     return len(logs()) >= count
 
 
+def wait_no_logs(count, timeout=1.0):
+    """Give a recording that should not happen time to appear."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if len(logs()) != count:
+            return False
+        time.sleep(0.05)
+    return len(logs()) == count
+
+
 def read(path):
     try:
         with open(path, "r", encoding="utf-8") as handle:
@@ -88,6 +99,16 @@ def wait_content(path, needle, timeout=10.0):
             return True
         time.sleep(0.05)
     return needle in read(path)
+
+
+def any_log_has(needle, timeout=10.0):
+    """True once some recorded body holds needle."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if any(needle in read(path) for path in logs()):
+            return True
+        time.sleep(0.05)
+    return any(needle in read(path) for path in logs())
 
 
 def open_settings(client):
@@ -167,28 +188,26 @@ def scenario_off_by_default(res):
         client.close()
 
 
-def scenario_new_panes_record(res):
-    begin("record on: new panes are recorded, the pane before it is not")
+def scenario_toggle_records_running_pane(res):
+    begin("record on: the pane already running starts recording at the toggle")
     client = Client()
     try:
         res.check("the session starts", wait_status(client, "[NORMAL] main"), status_line(client))
         client.send("echo BEFORE-ON\n")
-        res.check("the first pane prints", wait_text(client, "BEFORE-ON"))
+        res.check("the pane prints before the toggle", wait_text(client, "BEFORE-ON"))
+        client.pump(0.3)
 
         res.check("the record flag turns on", set_record(client, True))
-
-        client.send(b"\x10n")
-        res.check("a split adds a second pane", wait_panes(client, 2), status_line(client))
-        client.send("printf 'first\\nsecond\\n'\n")
-        res.check("the new pane prints", wait_text(client, "second"))
-        res.check("a recording file appears for the new pane only", wait_logs(1),
+        client.send("echo AFTER-ON\n")
+        res.check("the same pane prints after the toggle", wait_text(client, "AFTER-ON"))
+        res.check("the running pane records from the toggle", any_log_has("AFTER-ON"),
                   "logs=%r" % logs())
+        res.check("only the running pane is recorded", len(logs()) == 1,
+                  "logs=%r" % [os.path.basename(path) for path in logs()])
 
         names = [os.path.basename(path) for path in logs()]
-        res.check("the pane before the flag stays unrecorded", len(logs()) == 1,
-                  "logs=%r" % names)
-        res.check("the file is named after the recording pane",
-                  names[:1] and names[0].startswith("2-") and names[0].endswith(".log"),
+        res.check("the file is named after the running pane",
+                  names[:1] and names[0].startswith("1-") and names[0].endswith(".log"),
                   "names=%r" % names)
 
         if logs():
@@ -197,9 +216,10 @@ def scenario_new_panes_record(res):
             client.pump(0.3)
             body = read(log)
             stamps = read(times).splitlines()
-            res.check("the body holds the settled lines",
-                      "first" in body.splitlines() and "second" in body.splitlines(),
-                      repr(body))
+            res.check("output printed before the toggle stays out",
+                      "BEFORE-ON" not in body, repr(body))
+            res.check("the body holds the settled lines after the toggle",
+                      "AFTER-ON" in body.splitlines(), repr(body))
             res.check("the body has no escape sequences", "\x1b" not in body, repr(body))
             res.check("the sidecar exists", os.path.exists(times), times)
             res.check("one stamp per line", len(stamps) == len(body.splitlines()),
@@ -228,56 +248,119 @@ def scenario_new_panes_record(res):
         client.close()
 
 
-def scenario_alternate_screen(res):
-    begin("the alternate screen is not recorded and recording resumes after it")
+def scenario_new_pane_records(res):
+    begin("record on: a pane split afterwards is recorded too")
     client = Client()
     try:
         res.check("the session starts", wait_status(client, "[NORMAL] main"), status_line(client))
         res.check("the record flag turns on", set_record(client, True))
         client.send(b"\x10n")
-        client.pump(0.3)
-        client.send("printf '\\033[?1049h'\n")
-        client.pump(0.4)
-        client.send("printf 'HIDDEN-LINE\\n'\n")
-        client.pump(0.4)
-        client.send("printf '\\033[?1049l'\n")
-        client.pump(0.4)
-        client.send("printf 'AFTER-ALT\\n'\n")
-        res.check("the pane prints after leaving the alternate screen",
-                  wait_text(client, "AFTER-ALT"))
-        res.check("a recording file appears", wait_logs(1), "logs=%r" % logs())
-        if logs():
-            res.check("recording resumes after the alternate screen",
-                      wait_content(logs()[0], "AFTER-ALT"), read(logs()[0]))
-            res.check("the alternate screen text is not recorded",
-                      "HIDDEN-LINE" not in read(logs()[0]), read(logs()[0]))
+        res.check("a split adds a second pane", wait_panes(client, 2), status_line(client))
+        client.send("printf 'first\\nsecond\\n'\n")
+        res.check("the new pane prints", wait_text(client, "second"))
+        res.check("both panes have a recording", wait_logs(2), "logs=%r" % logs())
+
+        names = sorted(os.path.basename(path) for path in logs())
+        res.check("both panes are named in the files",
+                  len(names) == 2 and names[0].startswith("1-") and names[1].startswith("2-"),
+                  "names=%r" % names)
+        named = [path for path in logs() if os.path.basename(path).startswith("2-")]
+        if named:
+            res.check("the split pane's own output is recorded",
+                      wait_content(named[0], "second"), read(named[0]))
         client.send("exit\n")
         client.wait_exit(10)
     finally:
         client.close()
 
 
-def scenario_off_stops_new_panes(res):
-    begin("record off: panes made afterwards are not recorded")
+def scenario_alternate_screen(res):
+    begin("the alternate screen is not recorded and recording resumes after it")
     client = Client()
     try:
         res.check("the session starts", wait_status(client, "[NORMAL] main"), status_line(client))
         res.check("the record flag turns on", set_record(client, True))
-        client.send(b"\x10n")
-        client.pump(0.2)
+        client.send("printf '\\033[?1049h'\\n")
+        client.pump(0.4)
+        client.send("printf 'HIDDEN-LINE\\n'\\n")
+        client.pump(0.4)
+        client.send("printf '\\033[?1049l'\\n")
+        client.pump(0.4)
+        client.send("printf 'AFTER-ALT\\n'\\n")
+        res.check("the pane prints after leaving the alternate screen",
+                  wait_text(client, "AFTER-ALT"))
+        res.check("the recording catches up after the alternate screen",
+                  any_log_has("AFTER-ALT"), "logs=%r" % logs())
+        res.check("the alternate screen text is not recorded",
+                  not any_log_has("HIDDEN-LINE", timeout=0.5),
+                  "\n".join(read(path) for path in logs()))
+        client.send("exit\n")
+        client.wait_exit(10)
+    finally:
+        client.close()
+
+
+def scenario_off_stops_running_pane(res):
+    begin("record off: the pane already running stops recording at the toggle")
+    client = Client()
+    try:
+        res.check("the session starts", wait_status(client, "[NORMAL] main"), status_line(client))
+        res.check("the record flag turns on", set_record(client, True))
         client.send("echo FIRST-RECORD\n")
         res.check("the recorded pane prints", wait_text(client, "FIRST-RECORD"))
-        res.check("one file exists", wait_logs(1), "logs=%r" % logs())
-        before = len(logs())
+        res.check("the recording starts", wait_logs(1), "logs=%r" % logs())
+        log = logs()[0]
+        res.check("the first line reaches the file", wait_content(log, "FIRST-RECORD"), read(log))
 
         res.check("the record flag turns off", set_record(client, False))
+        client.send("echo AFTER-OFF\n")
+        res.check("the same pane prints after the toggle", wait_text(client, "AFTER-OFF"))
+        client.pump(0.6)
+        res.check("output after the toggle stays out of the file",
+                  "AFTER-OFF" not in read(log), read(log))
+        res.check("no second file appears for the pane", len(logs()) == 1,
+                  "logs=%r" % [os.path.basename(path) for path in logs()])
+
         client.send(b"\x10n")
         client.pump(0.2)
-        client.send("echo AFTER-OFF\n")
-        res.check("the new pane prints", wait_text(client, "AFTER-OFF"))
-        client.pump(0.6)
-        res.check("no new file appears", len(logs()) == before,
-                  "before=%d after=%r" % (before, logs()))
+        client.send("echo AFTER-OFF-NEW\n")
+        res.check("the new pane prints", wait_text(client, "AFTER-OFF-NEW"))
+        res.check("a pane made while off is not recorded", wait_no_logs(1, timeout=1.0),
+                  "logs=%r" % [os.path.basename(path) for path in logs()])
+        client.send("exit\n")
+        client.wait_exit(10)
+    finally:
+        client.close()
+
+
+def scenario_floating_pane_toggle(res):
+    begin("the toggle reaches a floating pane that already exists")
+    client = Client()
+    try:
+        res.check("the session starts", wait_status(client, "[NORMAL] main"), status_line(client))
+        client.send(PANE + b"f")
+        res.check("a floating pane appears", wait_status(client, "[FLOAT]"), status_line(client))
+        client.send("echo FLOAT-BEFORE\n")
+        res.check("the float prints", wait_text(client, "FLOAT-BEFORE"))
+        client.send(PANE + b"f")
+        res.check("the float hides", pump_until(
+            client, lambda c: "[FLOAT]" not in status_line(c)), status_line(client))
+
+        res.check("the record flag turns on", set_record(client, True))
+        client.send(PANE + b"f")
+        res.check("the float is back", wait_status(client, "[FLOAT]"), status_line(client))
+        client.send("echo FLOAT-AFTER\n")
+        res.check("the float prints again", wait_text(client, "FLOAT-AFTER"))
+        res.check("the floating pane is recorded after the toggle",
+                  any_log_has("FLOAT-AFTER"), "logs=%r" % logs())
+        names = [os.path.basename(path) for path in logs()]
+        res.check("the floating pane has its own file",
+                  names and all(name.startswith("2-") for name in names), "names=%r" % names)
+        res.check("the float's earlier output stays out",
+                  not any_log_has("FLOAT-BEFORE", timeout=0.5),
+                  "\n".join(read(path) for path in logs()))
+        client.send(PANE + b"f")
+        client.pump(0.2)
         client.send("exit\n")
         client.wait_exit(10)
     finally:
@@ -303,11 +386,9 @@ def scenario_flag_survives_restart(res):
         res.check("the settings screen still shows record on", open_settings(second)
                   and wait_text(second, "record: on"))
         leave_overlay(second)
-        second.send(b"\x10n")
-        second.pump(0.3)
         second.send("echo RESTORED-RECORD\n")
-        res.check("a pane after the restart prints", wait_text(second, "RESTORED-RECORD"))
-        res.check("a pane after the restart is still recorded", wait_logs(1),
+        res.check("a restored pane prints", wait_text(second, "RESTORED-RECORD"))
+        res.check("a restored pane is recorded", any_log_has("RESTORED-RECORD"),
                   "logs=%r" % logs())
         second.send("exit\n")
         second.wait_exit(10)
@@ -319,9 +400,11 @@ def main():
     res = Result()
     try:
         scenario_off_by_default(res)
-        scenario_new_panes_record(res)
+        scenario_toggle_records_running_pane(res)
+        scenario_new_pane_records(res)
         scenario_alternate_screen(res)
-        scenario_off_stops_new_panes(res)
+        scenario_off_stops_running_pane(res)
+        scenario_floating_pane_toggle(res)
         scenario_flag_survives_restart(res)
     finally:
         cleanup()
